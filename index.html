@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Custom Values Analyzer</title>
+  <link rel="stylesheet" href="vendor/hljs/atom-one-dark.min.css" />
+  <link rel="stylesheet" href="css/app.css?v=1.0.12" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Custom Values Analyzer</h1>
+    <nav class="nav" id="nav">
+      <a href="#/" data-route>Home</a>
+      <a href="#/dashboard" data-route>Matrix</a>
+      <a href="#/customers" data-route>Customers</a>
+      <a href="#/services" data-route>Services</a>
+      <a href="#/anomaly" data-route>Anomaly</a>
+      <a href="#/dive" data-route>Service Dive</a>
+      <a href="#/about" data-route>About</a>
+    </nav>
+  </header>
+
+  <main id="app" class="main"></main>
+
+  <div id="tooltip" class="tooltip" hidden aria-live="polite"></div>
+
+  <footer class="footer">
+    <span id="footer-status">v1.0.12</span>
+  </footer>
+
+  <script src="vendor/hljs/highlight.min.js"></script>
+  <script src="vendor/hljs/yaml.min.js"></script>
+  <script type="module" src="js/app.js?v=1.0.12"></script>
+</body>
+</html>
