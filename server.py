@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "1.0.12"
+VERSION = "1.0.15"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
@@ -109,16 +109,17 @@ class Handler(SimpleHTTPRequestHandler):
                 "name": "Custom Values Analyzer",
                 "description": "Browse and analyze Helm custom_values YAML across AWS and Azure customers.",
                 "features": [
-                    "Scan — read-only scan of ~/work/st_customers/{AWS,Azure}/ merged with base values.yaml",
+                    "Scan — read-only scan of customer trees merged with base values.yaml",
                     "Matrix — service × customer grid with enabled/disabled status and YAML hover",
                     "Customers — browse merged YAML per customer",
                     "Services — browse merged YAML per service across all customers",
-                    "Anomaly — find customers or services with unusually few enabled/disabled entries",
                     "Service Dive — 2nd-level key × customer matrix with modal/outlier analysis",
+                    "Anomaly — find customers or services with unusually few enabled/disabled entries",
                     "Key+Value filter — find customers by specific config key values",
                     "Cloud filter — AWS / Azure / Both toggle on all matrix views",
                     "Click-to-pin — click any matrix cell to pin its YAML tooltip for copy/paste",
                     "CSV export — download the main matrix as CSV",
+                    "Paths — override customers root and base values from Home (saved under data/)",
                 ],
                 "tech": "Python 3 + PyYAML + SQLite + vanilla HTML/JS/CSS + highlight.js",
                 "source_paths": {

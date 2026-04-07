@@ -348,6 +348,24 @@ code {
   font-weight: 600;
 }
 
+.svc-cust-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.svc-cust-link:hover {
+  text-decoration: underline;
+}
+
+.svc-customer-block {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.svc-customer-block:last-child {
+  border-bottom: none;
+}
+
 .filter-color-wrap.hidden {
   display: none;
 }

@@ -534,46 +534,77 @@ async function renderService(name) {
   try { row = await api(`/api/service?name=${encodeURIComponent(name)}`); }
   catch (e) { app.innerHTML = `<div class="panel"><p class="error-banner">${esc(String(e))}</p></div>`; return; }
 
-  const root = document.createElement("div");
-  root.className = "panel";
-  root.style.maxWidth = "100%";
-
-  const h2 = document.createElement("h2");
-  h2.textContent = row.name;
-  root.appendChild(h2);
-
-  const hint = document.createElement("p");
-  hint.style.cssText = "font-size:0.85rem;color:var(--muted);";
-  hint.textContent = "Per-customer merged subtree for this service. Read-only YAML.";
-  root.appendChild(hint);
-
-  const entries = Object.entries(row.by_customer || {})
+  const allEntries = Object.entries(row.by_customer || {})
     .sort(([a], [b]) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 
-  for (const [cust, info] of entries) {
-    const h3 = document.createElement("h3");
-    h3.className = "svc-cust-head";
-    h3.textContent = cust;
-    root.appendChild(h3);
+  app.innerHTML = `
+    <div class="panel" style="max-width:100%;">
+      <h2>${esc(row.name)}</h2>
+      <div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem;">
+        <a class="btn btn-primary" href="#/dive/${encodeURIComponent(row.name)}" data-route style="text-decoration:none;">Open in Service Dive</a>
+        <span class="cloud-radio-group" role="group" aria-label="Filter">
+          <label class="radio-lbl"><input type="radio" name="svc-color" value="all" checked /> All</label>
+          <label class="radio-lbl"><input type="radio" name="svc-color" value="green" /> Green</label>
+          <label class="radio-lbl"><input type="radio" name="svc-color" value="red" /> Red</label>
+        </span>
+        <span id="svc-count" style="font-size:0.82rem;color:var(--muted);"></span>
+      </div>
+      <p style="font-size:0.85rem;color:var(--muted);">Per-customer merged subtree for this service. Read-only YAML. Click a customer name to view their full config.</p>
+      <div id="svc-entries"></div>
+    </div>
+  `;
 
-    const badge = document.createElement("p");
-    badge.className = "files";
-    badge.textContent = info.enabled ? "● enabled: true (green)" : "○ not enabled: true (red)";
-    badge.style.color = info.enabled ? "var(--on)" : "var(--off)";
-    root.appendChild(badge);
+  const container = document.getElementById("svc-entries");
+  const countEl   = document.getElementById("svc-count");
 
-    const pre  = document.createElement("pre");
-    pre.className = "yaml-view";
-    const code = document.createElement("code");
-    code.className = "language-yaml";
-    code.textContent = info.yaml || "# (empty)";
-    highlightYamlCode(code);
-    pre.appendChild(code);
-    root.appendChild(pre);
+  function paint() {
+    const mode = document.querySelector('input[name="svc-color"]:checked')?.value || "all";
+    const filtered = mode === "all"
+      ? allEntries
+      : mode === "green"
+        ? allEntries.filter(([, info]) => info.enabled === true)
+        : allEntries.filter(([, info]) => info.enabled !== true);
+
+    countEl.textContent = `Showing ${filtered.length} of ${allEntries.length} customers`;
+    container.innerHTML = "";
+
+    for (const [cust, info] of filtered) {
+      const section = document.createElement("div");
+      section.className = "svc-customer-block";
+
+      const h3 = document.createElement("h3");
+      h3.className = "svc-cust-head";
+      const link = document.createElement("a");
+      link.href = `#/customer/${encodeURIComponent(cust)}`;
+      link.setAttribute("data-route", "");
+      link.textContent = cust;
+      link.className = "svc-cust-link";
+      h3.appendChild(link);
+      section.appendChild(h3);
+
+      const badge = document.createElement("p");
+      badge.className = "files";
+      badge.textContent = info.enabled ? "● enabled: true (green)" : "○ not enabled: true (red)";
+      badge.style.color = info.enabled ? "var(--on)" : "var(--off)";
+      section.appendChild(badge);
+
+      const pre  = document.createElement("pre");
+      pre.className = "yaml-view";
+      const code = document.createElement("code");
+      code.className = "language-yaml";
+      code.textContent = info.yaml || "# (empty)";
+      highlightYamlCode(code);
+      pre.appendChild(code);
+      section.appendChild(pre);
+
+      container.appendChild(section);
+    }
   }
 
-  app.innerHTML = "";
-  app.appendChild(root);
+  document.querySelectorAll('input[name="svc-color"]').forEach((r) =>
+    r.addEventListener("change", paint)
+  );
+  paint();
 }
 
 // ──────────────────────────────────────────────────────── Service Dive ──────
@@ -927,8 +958,15 @@ async function renderAbout() {
         <tr><td>Base values</td><td><code>${esc(paths.base_values || "—")}</code></td></tr>
       </table>
 
+      <h3>Versioning</h3>
+      <p style="color:var(--muted);font-size:0.9rem;margin-bottom:1rem;">The app version is <code>VERSION</code> in <code>server.py</code>. Each release should bump that string and the <code>?v=</code> query strings (and footer label) in <code>index.html</code> so browsers load updated CSS and JS instead of stale cache.</p>
+
       <h3>Changelog</h3>
       <ul class="about-changelog">
+        <li><strong>1.0.15</strong> — Nav order: Services → Service Dive → Anomaly → About; About versioning note and changelog catch-up; feature list order aligned with nav</li>
+        <li><strong>1.0.14</strong> — Service detail: Open in Service Dive, All/Green/Red customer filter, customer names link to customer pages</li>
+        <li><strong>1.0.13</strong> — INSTALL.md, broader .gitignore, Home path overrides with persistence (<code>data/user_config.json</code>)</li>
+        <li><strong>1.0.12</strong> — Prior cache-bust and footer alignment with server version</li>
         <li><strong>1.0.11</strong> — Cache busting, About page, version tag</li>
         <li><strong>1.0.10</strong> — Key+value filter visibility fix, removed redundant filter textbox</li>
         <li><strong>1.0.9</strong> — Key+value filter for Service Dive (filter customers by config values)</li>
