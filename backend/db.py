@@ -27,6 +27,14 @@ CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(customers)").fetchall()}
+    if "core_segment" not in cols:
+        conn.execute(
+            "ALTER TABLE customers ADD COLUMN core_segment INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 @contextmanager
 def connect(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,6 +42,7 @@ def connect(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
@@ -56,23 +65,32 @@ def meta_get(conn: sqlite3.Connection, key: str, default: str | None = None) -> 
 
 def replace_customers(
     conn: sqlite3.Connection,
-    rows: list[tuple[str, list[dict[str, Any]], dict[str, Any]]],
+    rows: list[tuple[str, list[dict[str, Any]], dict[str, Any], int]],
 ) -> None:
-    """rows: (customer_name, files_meta, merged_dict)"""
+    """rows: (customer_name, files_meta, merged_dict, core_segment 0|1)"""
     conn.execute("DELETE FROM customers")
     epoch = time.time()
-    for name, files_meta, merged in rows:
+    for name, files_meta, merged, core_segment in rows:
         conn.execute(
-            "INSERT INTO customers(name, source_files, merged_json, scan_epoch) VALUES(?,?,?,?)",
-            (name, json.dumps(files_meta), json.dumps(merged, default=str), epoch),
+            "INSERT INTO customers(name, source_files, merged_json, scan_epoch, core_segment) VALUES(?,?,?,?,?)",
+            (name, json.dumps(files_meta), json.dumps(merged, default=str), epoch, core_segment),
         )
 
 
 def list_customers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     cur = conn.execute(
-        "SELECT name, source_files, scan_epoch FROM customers ORDER BY name COLLATE NOCASE"
+        "SELECT name, source_files, scan_epoch, core_segment FROM customers ORDER BY name COLLATE NOCASE"
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+def iter_customers_merged(conn: sqlite3.Connection) -> Iterator[tuple[str, dict[str, Any], bool]]:
+    """Single query: name, merged dict, is_core (clingine enabled)."""
+    cur = conn.execute(
+        "SELECT name, merged_json, core_segment FROM customers ORDER BY name COLLATE NOCASE"
+    )
+    for row in cur.fetchall():
+        yield row["name"], json.loads(row["merged_json"]), bool(row["core_segment"])
 
 
 def get_customer(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:

@@ -697,29 +697,191 @@ code {
   font-style: italic;
 }
 
-/* ── Cloud radio group (shared: matrix + dive) ─────────────────────────── */
-
-.cloud-radio-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 0;
+/* Service Dive — diff two customers + YAML diff panel */
+.dive-diff-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.85rem;
+  margin-top: 0.55rem;
+  padding: 0.5rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
-  font-size: 0.82rem;
+  background: var(--bg);
 }
 
-.radio-lbl {
+.dive-diff-row.hidden {
+  display: none;
+}
+
+.dive-diff-check {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.35rem 0.65rem;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.dive-diff-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+}
+
+.dive-diff-picks.hidden {
+  display: none !important;
+}
+
+.dive-diff-picks label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.dive-diff-picks select {
+  min-width: 9rem;
+  max-width: 20rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.yaml-diff-panel {
+  margin-top: 0.85rem;
+}
+
+.yaml-diff-panel.hidden {
+  display: none;
+}
+
+.yaml-diff-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.yaml-diff-toolbar .yaml-diff-labels {
+  flex: 1;
+  font-size: 0.8rem;
+  color: var(--muted);
+  min-width: 8rem;
+}
+
+.yaml-diff-scope-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.yaml-diff-scope-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.yaml-diff-scope-radios {
+  flex-shrink: 0;
+}
+
+.yaml-diff-mode-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin: 0 0 0.55rem;
+  line-height: 1.35;
+}
+
+.yaml-diff-table-wrap {
+  overflow: auto;
+  max-height: min(72vh, 50rem);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.yaml-diff-table-wrap table.diff {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.yaml-diff-table-wrap td,
+.yaml-diff-table-wrap th {
+  border: 1px solid var(--border);
+  vertical-align: top;
+  padding: 0.08rem 0.3rem;
+}
+
+.yaml-diff-table-wrap td.diff_header,
+.yaml-diff-table-wrap th.diff_header {
+  background: #243044;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.yaml-diff-table-wrap td.diff_add {
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.yaml-diff-table-wrap td.diff_sub {
+  background: rgba(239, 68, 68, 0.16);
+}
+
+.yaml-diff-table-wrap td.diff_chg {
+  background: rgba(234, 179, 8, 0.1);
+}
+
+.yaml-diff-table-wrap td.diff_next {
+  background: var(--surface);
+}
+
+.yaml-diff-table-wrap td.diff_empty {
+  background: transparent;
+}
+
+/* ── Segmented radio groups (cloud, core, service detail) — dense to fit narrow panels */
+
+.cloud-radio-group,
+.core-radio-group {
+  display: inline-flex;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 0.65rem;
+  max-width: 100%;
+}
+
+.cloud-radio-group .radio-lbl,
+.core-radio-group .radio-lbl {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0.12rem 0.26rem;
   cursor: pointer;
   user-select: none;
   border-right: 1px solid var(--border);
   transition: background 0.1s;
   white-space: nowrap;
   color: var(--muted);
+  line-height: 1.2;
 }
 
 .radio-lbl:last-child { border-right: none; }
@@ -731,10 +893,43 @@ code {
 
 .radio-lbl:hover { background: #1e2c3f; }
 
-.radio-lbl input[type="radio"] {
+.cloud-radio-group .radio-lbl input[type="radio"],
+.core-radio-group .radio-lbl input[type="radio"] {
   accent-color: var(--accent);
-  width: 0.8rem;
-  height: 0.8rem;
+  width: 0.52rem;
+  height: 0.52rem;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.filters-matrix-toolbar {
+  align-items: flex-end;
+  gap: 0.45rem 0.55rem;
+  flex-wrap: wrap;
+}
+
+.filter-toolbar-cluster {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.matrix-toolbar-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+  max-width: 52rem;
+}
+
+.matrix-toolbar-hint .muted-label {
+  font-weight: 600;
+  color: var(--text);
+  opacity: 0.85;
+}
+
+.dive-segment-hint {
+  margin: 0.35rem 0 0.5rem;
 }
 
 .dive-footer {

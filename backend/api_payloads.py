@@ -6,9 +6,11 @@ import csv
 import io
 import json
 from collections import Counter
+from difflib import HtmlDiff
 from typing import Any
 
-from backend.db import connect, get_customer, list_customers, meta_get
+from backend.config import CORE_SEGMENT_SERVICE_KEY
+from backend.db import connect, get_customer, iter_customers_merged, meta_get
 from backend.services import (
     discover_service_keys,
     effective_enabled,
@@ -30,17 +32,35 @@ def meta_bundle(conn) -> dict[str, Any]:
         "base_values_path": meta_get(conn, "base_values_path"),
         "service_key_count": meta_get(conn, "service_key_count"),
         "scan_errors": json.loads(meta_get(conn, "scan_errors_json") or "[]"),
+        "core_segment_service_key": meta_get(conn, "core_segment_service_key")
+        or CORE_SEGMENT_SERVICE_KEY,
     }
 
 
-def _merged_by_customer(conn) -> dict[str, dict[str, Any]]:
+def _load_merged_and_core(conn) -> tuple[dict[str, dict[str, Any]], dict[str, bool], str]:
+    """Single SELECT over customers — avoids N+1 get_customer calls."""
     merged_by_name: dict[str, dict[str, Any]] = {}
-    for row in list_customers(conn):
-        name = row["name"]
-        full = get_customer(conn, name)
-        if full:
-            merged_by_name[name] = full["merged"]
+    customer_core: dict[str, bool] = {}
+    for name, merged, is_core in iter_customers_merged(conn):
+        merged_by_name[name] = merged
+        customer_core[name] = is_core
+    core_key = meta_get(conn, "core_segment_service_key") or CORE_SEGMENT_SERVICE_KEY
+    return merged_by_name, customer_core, core_key
+
+
+def _merged_by_customer(conn) -> dict[str, dict[str, Any]]:
+    merged_by_name, _, _ = _load_merged_and_core(conn)
     return merged_by_name
+
+
+def _filter_customers_segment(
+    names: list[str], core_map: dict[str, bool], segment: str
+) -> list[str]:
+    if segment == "core":
+        return [n for n in names if core_map.get(n) is True]
+    if segment == "other":
+        return [n for n in names if core_map.get(n) is not True]
+    return list(names)
 
 
 def customer_public_view(conn, name: str) -> dict[str, Any] | None:
@@ -53,7 +73,7 @@ def customer_public_view(conn, name: str) -> dict[str, Any] | None:
 
 
 def dashboard_matrix(conn) -> dict[str, Any]:
-    merged_by_name = _merged_by_customer(conn)
+    merged_by_name, customer_core, core_key = _load_merged_and_core(conn)
     customer_names = sorted(merged_by_name.keys(), key=str.casefold)
 
     service_keys = union_sorted(
@@ -77,25 +97,23 @@ def dashboard_matrix(conn) -> dict[str, Any]:
         "customer_names": customer_names,
         "service_keys": service_keys,
         "matrix": matrix,
+        "customer_core": customer_core,
+        "core_service_key": core_key,
     }
 
 
-def matrix_csv(conn) -> str:
+def matrix_csv(conn, segment: str = "all") -> str:
     data = dashboard_matrix(conn)
-    names = data["customer_names"]
+    names = _filter_customers_segment(
+        data["customer_names"], data["customer_core"], segment
+    )
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["service", *names])
     for row in data["matrix"]:
         sk = row["service"]
         cells = row["by_customer"]
-        w.writerow(
-            [sk]
-            + [
-                _cell_csv(cells.get(n, {}))
-                for n in names
-            ]
-        )
+        w.writerow([sk] + [_cell_csv(cells.get(n, {})) for n in names])
     return buf.getvalue()
 
 
@@ -103,24 +121,44 @@ def _cell_csv(cell: dict[str, Any]) -> str:
     return "on" if cell.get("enabled") is True else "off"
 
 
-def list_service_names(conn) -> list[dict[str, str]]:
-    merged_by_name = _merged_by_customer(conn)
-    keys = union_sorted(discover_service_keys(m) for m in merged_by_name.values())
-    return [{"name": k} for k in keys]
+def services_list_payload(conn) -> dict[str, Any]:
+    merged_by_name, customer_core, core_key = _load_merged_and_core(conn)
+    keys_by_customer: dict[str, set[str]] = {
+        c: set(discover_service_keys(m)) for c, m in merged_by_name.items()
+    }
+    service_keys = union_sorted(keys_by_customer.values())
+    items: list[dict[str, Any]] = []
+    for sk in service_keys:
+        incore = any(
+            customer_core.get(c) and sk in keys_by_customer[c] for c in merged_by_name
+        )
+        inother = any(
+            (not customer_core.get(c)) and sk in keys_by_customer[c] for c in merged_by_name
+        )
+        items.append({"name": sk, "in_core": incore, "in_other": inother})
+    return {
+        "core_service_key": core_key,
+        "customer_core": customer_core,
+        "services": items,
+    }
 
 
 def compute_anomaly(
-    conn, entity: str, threshold: int, color: str
+    conn, entity: str, threshold: int, color: str, segment: str = "all"
 ) -> list[dict[str, Any]]:
     """
     entity: 'customers' | 'services'
     threshold: return items whose count is strictly < threshold
     color: 'green' (enabled=true) | 'red' (enabled!=true)
+    segment: 'all' | 'core' | 'other' — limit to customers with core service on/off
     Returns list of {name, count, total} sorted by count ascending.
     """
     data = dashboard_matrix(conn)
     matrix = data["matrix"]
-    customers = data["customer_names"]
+    customers_all = data["customer_names"]
+    customers = _filter_customers_segment(
+        customers_all, data["customer_core"], segment
+    )
     match = (lambda v: v) if color == "green" else (lambda v: not v)
 
     results: list[dict[str, Any]] = []
@@ -128,16 +166,22 @@ def compute_anomaly(
         total = len(matrix)
         for cname in customers:
             count = sum(
-                1 for row in matrix if match(row["by_customer"].get(cname, {}).get("enabled", False))
+                1
+                for row in matrix
+                if match(row["by_customer"].get(cname, {}).get("enabled", False))
             )
             if count < threshold:
                 results.append({"name": cname, "count": count, "total": total})
     else:
         total = len(customers)
+        if total == 0:
+            return []
         for row in matrix:
             svc = row["service"]
             count = sum(
-                1 for c in customers if match(row["by_customer"].get(c, {}).get("enabled", False))
+                1
+                for c in customers
+                if match(row["by_customer"].get(c, {}).get("enabled", False))
             )
             if count < threshold:
                 results.append({"name": svc, "count": count, "total": total})
@@ -184,7 +228,7 @@ def service_dive(conn, service_key: str) -> dict[str, Any] | None:
     - ``is_missing``– True when the key is absent in that customer's block
     - ``modal_pct`` – percentage of customers sharing the modal value
     """
-    merged_by_name = _merged_by_customer(conn)
+    merged_by_name, customer_core, core_key = _load_merged_and_core(conn)
     all_keys = union_sorted(discover_service_keys(m) for m in merged_by_name.values())
     if service_key not in all_keys:
         return None
@@ -257,6 +301,8 @@ def service_dive(conn, service_key: str) -> dict[str, Any] | None:
         "customers": customers,
         "row_keys":  row_keys,
         "matrix":    matrix,
+        "customer_core": customer_core,
+        "core_service_key": core_key,
     }
 
 
@@ -274,3 +320,72 @@ def service_public_view(conn, service_key: str) -> dict[str, Any] | None:
             "yaml": dump_yaml(block, max_len=MERGED_YAML_MAX),
         }
     return {"name": service_key, "by_customer": by_customer}
+
+
+def service_yaml_diff_payload(
+    conn,
+    service_key: str,
+    customer_a: str,
+    customer_b: str,
+    *,
+    mode: str = "diff",
+) -> dict[str, Any]:
+    """
+    Side-by-side HTML table diff of the merged YAML subtree for ``service_key``
+    for two customers (stdlib :mod:`difflib.HtmlDiff`).
+
+    ``mode``:
+    - ``diff`` — context view (hunks + a few lines of context), default.
+    - ``all`` — full YAML on both sides; changed lines still colored via HtmlDiff.
+    """
+    if mode not in ("diff", "all"):
+        return {"error": "mode must be 'diff' or 'all'"}
+    if not customer_a or not customer_b:
+        return {"error": "customer_a and customer_b are required"}
+    if customer_a == customer_b:
+        return {"error": "choose two different customers"}
+
+    merged_by_name, _, _ = _load_merged_and_core(conn)
+    if customer_a not in merged_by_name:
+        return {"error": f"unknown customer: {customer_a}"}
+    if customer_b not in merged_by_name:
+        return {"error": f"unknown customer: {customer_b}"}
+
+    all_keys = union_sorted(discover_service_keys(m) for m in merged_by_name.values())
+    if service_key not in all_keys:
+        return {"error": "service not found"}
+
+    block_a = get_service_block(merged_by_name[customer_a], service_key)
+    block_b = get_service_block(merged_by_name[customer_b], service_key)
+    if not isinstance(block_a, dict):
+        block_a = {}
+    if not isinstance(block_b, dict):
+        block_b = {}
+
+    yaml_a = dump_yaml(block_a, max_len=MERGED_YAML_MAX)
+    yaml_b = dump_yaml(block_b, max_len=MERGED_YAML_MAX)
+    lines_a = yaml_a.splitlines(True)
+    lines_b = yaml_b.splitlines(True)
+
+    try:
+        differ = HtmlDiff(tabsize=2, wrapcolumn=96)
+    except TypeError:
+        differ = HtmlDiff(tabsize=2)
+
+    use_context = mode != "all"
+
+    table = differ.make_table(
+        lines_a,
+        lines_b,
+        fromdesc=customer_a,
+        todesc=customer_b,
+        context=use_context,
+        numlines=3,
+    )
+    return {
+        "service": service_key,
+        "left": customer_a,
+        "right": customer_b,
+        "mode": mode,
+        "html": table,
+    }

@@ -300,6 +300,33 @@ function getCloud(groupName) {
   return document.querySelector(`input[name="${groupName}"]:checked`)?.value || "both";
 }
 
+/** Core / Other / All — Core = `core_service_key` enabled for customer. */
+function coreRadioHTML(groupName) {
+  return `<span class="core-radio-group" role="group" aria-label="Customer segment">
+    <label class="radio-lbl"><input type="radio" name="${groupName}" value="all" checked /> All</label>
+    <label class="radio-lbl"><input type="radio" name="${groupName}" value="core" /> Core</label>
+    <label class="radio-lbl"><input type="radio" name="${groupName}" value="other" /> Other</label>
+  </span>`;
+}
+
+function getSegmentMode(groupName) {
+  return document.querySelector(`input[name="${groupName}"]:checked`)?.value || "all";
+}
+
+/**
+ * @param {string[]} customers
+ * @param {Record<string, boolean>} customerCore
+ * @param {"all"|"core"|"other"} mode
+ */
+function filterCustomersBySegment(customers, customerCore, mode) {
+  if (!mode || mode === "all") return customers;
+  return customers.filter((c) => {
+    const isCore = customerCore[c] === true;
+    if (mode === "core") return isCore;
+    return !isCore;
+  });
+}
+
 // ──────────────────────────────────────────────── Matrix / dashboard page ──────
 
 function isCellGreen(byService, svc, cust) {
@@ -338,17 +365,30 @@ async function renderDashboard() {
     return;
   }
 
-  const { customer_names: customers = [], service_keys: services = [], matrix = [] } = data;
+  const {
+    customer_names: customers = [],
+    service_keys: services = [],
+    matrix = [],
+    customer_core: customerCore = {},
+    core_service_key: coreKey = "clingine",
+  } = data;
+
+  const coreTitle = `Core = customers with ${coreKey} enabled: true; Other = not.`;
 
   app.innerHTML = `
     <div class="legend">
       <span><i class="pill on"></i> <strong>Green</strong> — <code>enabled: true</code></span>
       <span><i class="pill off"></i> <strong>Red</strong> — anything else; hover for YAML &nbsp;·&nbsp; <em>click to pin / unpin</em></span>
     </div>
-    <div class="filters">
+    <div class="filters filters-matrix-toolbar">
       <label>Filter services <input type="search" id="f-svc" placeholder="substring…" autocomplete="off" /></label>
       <label>Filter customers <input type="search" id="f-cust" placeholder="substring…" autocomplete="off" /></label>
-      ${cloudRadioHTML("mx-cloud")}
+      <span class="filter-toolbar-cluster" title="Cloud">
+        ${cloudRadioHTML("mx-cloud")}
+      </span>
+      <span class="filter-toolbar-cluster" title="${esc(coreTitle)}">
+        ${coreRadioHTML("mx-core")}
+      </span>
       <label id="f-color-wrap" class="hidden">Filter
         <select id="f-color">
           <option value="">all</option>
@@ -356,8 +396,9 @@ async function renderDashboard() {
           <option value="green">green</option>
         </select>
       </label>
-      <a class="btn" href="/api/export/matrix.csv" download="matrix.csv">Download CSV</a>
+      <a class="btn" id="mx-csv" href="/api/export/matrix.csv?segment=all" download="matrix.csv">Download CSV</a>
     </div>
+    <p class="matrix-toolbar-hint"><span class="muted-label">Segment</span> — ${esc(coreTitle)}</p>
     <div class="matrix-wrap" id="matrix-wrap"></div>
   `;
 
@@ -366,20 +407,31 @@ async function renderDashboard() {
   const fSvc       = document.getElementById("f-svc");
   const fColor     = document.getElementById("f-color");
   const fColorWrap = document.getElementById("f-color-wrap");
+  const mxCsv      = document.getElementById("mx-csv");
 
   const byService = Object.fromEntries(matrix.map((r) => [r.service, r.by_customer]));
 
+  function syncCsvHref() {
+    const seg = getSegmentMode("mx-core");
+    mxCsv.href = `/api/export/matrix.csv?segment=${encodeURIComponent(seg)}`;
+  }
+
   function paint() {
     const cloud = getCloud("mx-cloud");
+    const seg   = getSegmentMode("mx-core");
     const svcQ  = fSvc.value;
     const custQ = fCust.value;
 
-    // Cloud filter first, then text filter
-    const cloudCustomers = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
-    const fsBase = filterList(services, svcQ);
-    const fcBase = filterList(cloudCustomers, custQ);
+    syncCsvHref();
 
-    const otherFiltersUsed = svcQ.trim() !== "" || custQ.trim() !== "" || cloud !== "both";
+    // Cloud → segment → text filters (segment uses precomputed scan flags; fast on the client)
+    const cloudCustomers = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
+    const segCustomers   = filterCustomersBySegment(cloudCustomers, customerCore, seg);
+    const fsBase = filterList(services, svcQ);
+    const fcBase = filterList(segCustomers, custQ);
+
+    const otherFiltersUsed =
+      svcQ.trim() !== "" || custQ.trim() !== "" || cloud !== "both" || seg !== "all";
     const singleRow = fsBase.length === 1 && fcBase.length > 1;
     const singleCol = fcBase.length === 1 && fsBase.length > 1;
     const showColor = otherFiltersUsed && (singleRow || singleCol);
@@ -441,6 +493,7 @@ async function renderDashboard() {
   fCust.addEventListener("input", paint);
   fColor.addEventListener("change", paint);
   document.querySelectorAll('input[name="mx-cloud"]').forEach((r) => r.addEventListener("change", paint));
+  document.querySelectorAll('input[name="mx-core"]').forEach((r) => r.addEventListener("change", paint));
   paint();
 }
 
@@ -454,7 +507,10 @@ async function renderCustomers() {
   app.innerHTML = `
     <div class="panel" style="max-width:36rem;">
       <h2>Customers (${list.length})</h2>
-      <div class="filters">
+      <div class="filters filters-matrix-toolbar">
+        <span class="filter-toolbar-cluster" title="Core / Other (from last scan)">
+          ${coreRadioHTML("cust-core")}
+        </span>
         <label>Filter <input type="search" id="f-list" placeholder="name…" autocomplete="off" /></label>
       </div>
       <ul class="customer-list" id="cust-ul"></ul>
@@ -465,26 +521,38 @@ async function renderCustomers() {
   const inp = document.getElementById("f-list");
 
   function paint() {
-    const items = filterList(list.map((x) => x.name), inp.value);
+    const seg = getSegmentMode("cust-core");
+    let rows = list;
+    if (seg === "core") rows = rows.filter((x) => x.core);
+    else if (seg === "other") rows = rows.filter((x) => !x.core);
+    const items = filterList(rows.map((x) => x.name), inp.value);
     ul.innerHTML = items
       .map((name) => `<li><a href="#/customer/${encodeURIComponent(name)}" data-route>${esc(name)}</a></li>`)
       .join("");
   }
   inp.addEventListener("input", paint);
+  document.querySelectorAll('input[name="cust-core"]').forEach((r) => r.addEventListener("change", paint));
   paint();
 }
 
 // ──────────────────────────────────────────────────────── Services page ──────
 
 async function renderServices() {
-  let list = [];
-  try { list = await api("/api/services"); }
+  let payload;
+  try { payload = await api("/api/services"); }
   catch (e) { app.innerHTML = `<div class="panel"><p class="error-banner">${esc(String(e))}</p></div>`; return; }
+
+  const list = payload.services || [];
+  const coreKey = payload.core_service_key || "clingine";
 
   app.innerHTML = `
     <div class="panel" style="max-width:36rem;">
       <h2>Services (${list.length})</h2>
-      <div class="filters">
+      <p class="matrix-toolbar-hint" style="margin-top:0;"><span class="muted-label">Segment</span> — Core = service appears in at least one <em>Core</em> customer (${esc(coreKey)} on); Other = at least one <em>Other</em> customer.</p>
+      <div class="filters filters-matrix-toolbar">
+        <span class="filter-toolbar-cluster" title="Limit by customer segment">
+          ${coreRadioHTML("svc-core")}
+        </span>
         <label>Filter <input type="search" id="f-svc-list" placeholder="service key…" autocomplete="off" /></label>
       </div>
       <ul class="customer-list" id="svc-ul"></ul>
@@ -495,12 +563,17 @@ async function renderServices() {
   const inp = document.getElementById("f-svc-list");
 
   function paint() {
-    const items = filterList(list.map((x) => x.name), inp.value);
+    const seg = getSegmentMode("svc-core");
+    let rows = list;
+    if (seg === "core") rows = rows.filter((x) => x.in_core);
+    else if (seg === "other") rows = rows.filter((x) => x.in_other);
+    const items = filterList(rows.map((x) => x.name), inp.value);
     ul.innerHTML = items
       .map((name) => `<li><a href="#/service/${encodeURIComponent(name)}" data-route>${esc(name)}</a></li>`)
       .join("");
   }
   inp.addEventListener("input", paint);
+  document.querySelectorAll('input[name="svc-core"]').forEach((r) => r.addEventListener("change", paint));
   paint();
 }
 
@@ -653,12 +726,90 @@ function recomputeModal(rowData, fc) {
   return { modal_val, modal_pct: parseFloat(((modal_count / fc.length) * 100).toFixed(1)) };
 }
 
+/** Repopulate Service Dive diff dropdowns; keep valid values; avoid A === B when possible. */
+function syncDiveDiffSelects(pool, cloud) {
+  const selA = document.getElementById("dive-diff-a");
+  const selB = document.getElementById("dive-diff-b");
+  if (!selA || !selB) return;
+  const va = selA.value;
+  const vb = selB.value;
+  const opt = (c) =>
+    `<option value="${esc(c)}">${esc(displayCustomerName(c, cloud))}</option>`;
+  const head = '<option value="">— choose —</option>';
+  selA.innerHTML = head + pool.map(opt).join("");
+  selB.innerHTML = head + pool.map(opt).join("");
+  if (pool.includes(va)) selA.value = va;
+  else selA.value = pool[0] || "";
+  if (pool.includes(vb)) selB.value = vb;
+  else selB.value = pool.length >= 2 ? pool[1] : pool[0] || "";
+  if (selA.value && selA.value === selB.value && pool.length >= 2) {
+    const other = pool.find((c) => c !== selA.value);
+    if (other) selB.value = other;
+  }
+}
+
+async function runServiceDiveYamlDiff(modeArg) {
+  const svc = document.getElementById("dive-select")?.value;
+  const a = document.getElementById("dive-diff-a")?.value;
+  const b = document.getElementById("dive-diff-b")?.value;
+  const panel = document.getElementById("dive-yaml-diff-panel");
+  if (!svc || !panel) return;
+
+  const mode =
+    modeArg === "diff" || modeArg === "all"
+      ? modeArg
+      : (panel.querySelector('input[name="yaml-diff-scope"]:checked')?.value || "diff");
+
+  if (!a || !b || a === b) {
+    panel.classList.remove("hidden");
+    panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">Select two different customers.</p></div>`;
+    return;
+  }
+  panel.classList.remove("hidden");
+  panel.innerHTML = `<div class="panel yaml-diff-inner"><p style="color:var(--muted)">Generating diff…</p></div>`;
+  try {
+    const res = await api(
+      `/api/service-yaml-diff?service=${encodeURIComponent(svc)}&customer_a=${encodeURIComponent(a)}&customer_b=${encodeURIComponent(b)}&mode=${encodeURIComponent(mode)}`,
+    );
+    if (res.error) {
+      panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">${esc(res.error)}</p></div>`;
+      return;
+    }
+    const m = res.mode === "all" ? "all" : "diff";
+    panel.innerHTML = `<div class="panel yaml-diff-inner yaml-diff-surface">
+      <div class="yaml-diff-toolbar">
+        <span><strong>YAML diff</strong> — <code>${esc(res.service)}</code></span>
+        <span class="yaml-diff-scope-wrap" role="group" aria-label="YAML scope">
+          <span class="yaml-diff-scope-label">View</span>
+          <span class="cloud-radio-group yaml-diff-scope-radios">
+            <label class="radio-lbl"><input type="radio" name="yaml-diff-scope" value="diff" ${m === "diff" ? "checked" : ""} /> only-Diff</label>
+            <label class="radio-lbl"><input type="radio" name="yaml-diff-scope" value="all" ${m === "all" ? "checked" : ""} /> all</label>
+          </span>
+        </span>
+        <span class="yaml-diff-labels"><span>${esc(res.left)}</span> · <span>${esc(res.right)}</span></span>
+        <button type="button" class="btn" id="dive-yaml-diff-close">Close</button>
+      </div>
+      <p class="yaml-diff-mode-hint">${m === "all" ? "Full YAML on both sides; changed lines use diff colors." : "Hunks with a few lines of context (default)."}</p>
+      <div class="yaml-diff-table-wrap">${res.html}</div>
+    </div>`;
+    document.getElementById("dive-yaml-diff-close")?.addEventListener("click", () => {
+      panel.classList.add("hidden");
+      panel.innerHTML = "";
+    });
+  } catch (e) {
+    panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">${esc(String(e))}</p></div>`;
+  }
+}
+
 async function renderServiceDive(preselect = "") {
-  let serviceList = [];
-  try { serviceList = await api("/api/services"); }
+  let payload;
+  try { payload = await api("/api/services"); }
   catch (e) { app.innerHTML = `<div class="panel"><p class="error-banner">${esc(String(e))}</p></div>`; return; }
 
+  const coreKey = payload.core_service_key || "clingine";
+  const serviceList = payload.services || [];
   const names = serviceList.map((s) => s.name);
+  const diveCoreTitle = `Core = ${coreKey} enabled: true; Other = not.`;
   let diveData = null;
 
   app.innerHTML = `
@@ -677,25 +828,45 @@ async function renderServiceDive(preselect = "") {
             </select>
           </label>
         </div>
-        <div class="filters dive-subfilters hidden" id="dive-subfilters">
+        <div class="filters dive-subfilters filters-matrix-toolbar hidden" id="dive-subfilters">
           <label>Filter keys
             <input type="search" id="dive-fkey" placeholder="key name…" autocomplete="off" />
           </label>
-          <label>Filter customers
+          <label id="dive-fcust-wrap">Filter customers
             <input type="search" id="dive-fcust" placeholder="customer…" autocomplete="off" />
           </label>
-          ${cloudRadioHTML("dive-cloud")}
+          <span class="filter-toolbar-cluster" title="Cloud">
+            ${cloudRadioHTML("dive-cloud")}
+          </span>
+          <span class="filter-toolbar-cluster" title="${esc(diveCoreTitle)}">
+            ${coreRadioHTML("dive-core")}
+          </span>
           <span class="dive-legend">
             <span class="dive-pill modal">■</span>&nbsp;= same as majority &nbsp;&nbsp;
             <span class="dive-pill outlier">■</span>&nbsp;= different &nbsp;&nbsp;
             <span class="dive-pill missing">—</span>&nbsp;= not set
           </span>
         </div>
+        <p class="matrix-toolbar-hint dive-segment-hint hidden" id="dive-seg-hint"><span class="muted-label">Segment</span> — ${esc(diveCoreTitle)}</p>
         <div class="kv-row hidden" id="dive-kv-row">
           <span class="kv-label">Filter key+value</span>
           <input type="search" id="dive-kvkey" placeholder="key…" autocomplete="off" class="kv-input" />
           <span class="kv-contains">contains</span>
           <input type="search" id="dive-kvval" placeholder="value…" autocomplete="off" class="kv-input kv-val" />
+        </div>
+        <div class="dive-diff-row hidden" id="dive-diff-row">
+          <label class="dive-diff-check">
+            <input type="checkbox" id="dive-diff-mode" autocomplete="off" /> Diff customers
+          </label>
+          <span id="dive-diff-picks" class="dive-diff-picks hidden">
+            <label>Customer A
+              <select id="dive-diff-a"></select>
+            </label>
+            <label>Customer B
+              <select id="dive-diff-b"></select>
+            </label>
+            <button type="button" class="btn" id="dive-yaml-diff-btn">YamlDiff</button>
+          </span>
         </div>
       </div>
       <div id="dive-body" style="margin-top:0.75rem;"></div>
@@ -710,12 +881,38 @@ async function renderServiceDive(preselect = "") {
 
   function paintDive() {
     if (!diveData) return;
+    const matrixMount = document.getElementById("dive-matrix-mount");
+    if (!matrixMount) return;
     const cloud   = getCloud("dive-cloud");
+    const segment = getSegmentMode("dive-core");
     const keyQ    = document.getElementById("dive-fkey")?.value   || "";
     const custQ   = document.getElementById("dive-fcust")?.value  || "";
     const kvKey   = document.getElementById("dive-kvkey")?.value  || "";
     const kvValue = document.getElementById("dive-kvval")?.value  || "";
-    renderDiveTable(diveData, { cloud, keyQ, custQ, kvKey, kvValue }, bodyEl);
+    const diffMode = document.getElementById("dive-diff-mode")?.checked;
+
+    let pool = diveData.customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
+    pool = filterCustomersBySegment(pool, diveData.customer_core || {}, segment);
+    if (diffMode) syncDiveDiffSelects(pool, cloud);
+
+    const diffA = document.getElementById("dive-diff-a")?.value?.trim() || "";
+    const diffB = document.getElementById("dive-diff-b")?.value?.trim() || "";
+
+    renderDiveTable(
+      diveData,
+      {
+        cloud,
+        segment,
+        keyQ,
+        custQ: diffMode ? "" : custQ,
+        kvKey,
+        kvValue,
+        diffMode,
+        diffCustomerA: diffA,
+        diffCustomerB: diffB,
+      },
+      matrixMount,
+    );
   }
 
   selectEl.addEventListener("change", () => loadDive(selectEl.value));
@@ -725,13 +922,33 @@ async function renderServiceDive(preselect = "") {
       bodyEl.innerHTML = "";
       subfilters.classList.add("hidden");
       kvRow.classList.add("hidden");
+      document.getElementById("dive-seg-hint")?.classList.add("hidden");
+      document.getElementById("dive-diff-row")?.classList.add("hidden");
       return;
     }
     bodyEl.innerHTML = '<p style="padding:0.5rem 0;color:var(--muted);">Loading…</p>';
     try {
       diveData = await api(`/api/service-dive?service=${encodeURIComponent(serviceName)}`);
+      bodyEl.innerHTML = `
+        <div id="dive-matrix-mount"></div>
+        <div id="dive-yaml-diff-panel" class="yaml-diff-panel hidden" aria-live="polite"></div>
+      `;
       subfilters.classList.remove("hidden");
       kvRow.classList.remove("hidden");
+      document.getElementById("dive-seg-hint")?.classList.remove("hidden");
+      document.getElementById("dive-diff-row")?.classList.remove("hidden");
+      const dm = document.getElementById("dive-diff-mode");
+      if (dm) dm.checked = false;
+      document.getElementById("dive-diff-picks")?.classList.add("hidden");
+      document.getElementById("dive-fcust-wrap")?.classList.remove("hidden");
+      const yp = document.getElementById("dive-yaml-diff-panel");
+      if (yp) {
+        yp.classList.add("hidden");
+        yp.innerHTML = "";
+        yp.addEventListener("change", (e) => {
+          if (e.target?.name === "yaml-diff-scope") runServiceDiveYamlDiff(e.target.value);
+        });
+      }
       if (!subfiltersWired) {
         subfiltersWired = true;
         ["dive-fkey", "dive-fcust", "dive-kvkey", "dive-kvval"].forEach((id) =>
@@ -740,9 +957,29 @@ async function renderServiceDive(preselect = "") {
         document.querySelectorAll('input[name="dive-cloud"]').forEach((r) =>
           r.addEventListener("change", paintDive)
         );
+        document.querySelectorAll('input[name="dive-core"]').forEach((r) =>
+          r.addEventListener("change", paintDive)
+        );
+        document.getElementById("dive-diff-mode")?.addEventListener("change", () => {
+          const on = document.getElementById("dive-diff-mode")?.checked;
+          document.getElementById("dive-diff-picks")?.classList.toggle("hidden", !on);
+          document.getElementById("dive-fcust-wrap")?.classList.toggle("hidden", !!on);
+          const ypanel = document.getElementById("dive-yaml-diff-panel");
+          if (ypanel) {
+            ypanel.classList.add("hidden");
+            ypanel.innerHTML = "";
+          }
+          paintDive();
+        });
+        document.getElementById("dive-diff-a")?.addEventListener("change", paintDive);
+        document.getElementById("dive-diff-b")?.addEventListener("change", paintDive);
+        document.getElementById("dive-yaml-diff-btn")?.addEventListener("click", () => {
+          runServiceDiveYamlDiff();
+        });
       }
       paintDive();
     } catch (e) {
+      document.getElementById("dive-diff-row")?.classList.add("hidden");
       bodyEl.innerHTML = `<div class="panel"><p class="error-banner">${esc(String(e))}</p></div>`;
     }
   }
@@ -751,26 +988,64 @@ async function renderServiceDive(preselect = "") {
 }
 
 /**
- * Render the filtered dive table into `container`.
+ * Render the filtered dive table into `container` (matrix mount only).
  * Recomputes modal values for the visible customer subset so colors are always
  * meaningful even when cloud / text filters narrow the view.
  */
-function renderDiveTable(data, { cloud = "both", keyQ = "", custQ = "", kvKey = "", kvValue = "" }, container) {
+function renderDiveTable(
+  data,
+  {
+    cloud = "both",
+    segment = "all",
+    keyQ = "",
+    custQ = "",
+    kvKey = "",
+    kvValue = "",
+    diffMode = false,
+    diffCustomerA = "",
+    diffCustomerB = "",
+  },
+  container,
+) {
   const { service, customers, matrix } = data;
+  const customerCore = data.customer_core || {};
 
-  // Step 1: cloud + customer-text filter
-  let fc = customers
-    .filter((c) => cloud === "both" || cloudOf(c) === cloud)
-    .filter((c) => !custQ.trim() || c.toLowerCase().includes(custQ.toLowerCase()));
+  let fc;
 
-  // Step 2: key+value filter (reduces columns, not rows)
-  fc = filterCustomersByKV(data, fc, kvKey, kvValue);
+  if (diffMode) {
+    let pool = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
+    pool = filterCustomersBySegment(pool, customerCore, segment);
+    const a = diffCustomerA;
+    const b = diffCustomerB;
+    if (!a || !b || a === b) {
+      container.innerHTML =
+        '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Check <strong>Diff customers</strong> and choose two different customers.</p></div>';
+      return;
+    }
+    if (!pool.includes(a) || !pool.includes(b)) {
+      container.innerHTML =
+        '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Those customers are not in the current cloud/segment filter.</p></div>';
+      return;
+    }
+    fc = [a, b];
+    fc = filterCustomersByKV(data, fc, kvKey, kvValue);
+    if (fc.length < 2) {
+      container.innerHTML =
+        '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Key+value filter removed one of the two customers; clear or relax it.</p></div>';
+      return;
+    }
+  } else {
+    fc = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
+    fc = filterCustomersBySegment(fc, customerCore, segment);
+    fc = fc.filter((c) => !custQ.trim() || c.toLowerCase().includes(custQ.toLowerCase()));
+    fc = filterCustomersByKV(data, fc, kvKey, kvValue);
+  }
 
-  // Step 3: key-name filter (reduces rows only)
   const fs = matrix.filter((row) => !keyQ.trim() || row.key.toLowerCase().includes(keyQ.toLowerCase()));
 
   if (!fs.length || !fc.length) {
-    container.innerHTML = '<div class="panel"><p style="color:var(--muted);">No data for current filters.</p></div>';
+    container.innerHTML =
+      '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">No data for the current filters.</p></div>';
     return;
   }
 
@@ -819,7 +1094,8 @@ function renderDiveTable(data, { cloud = "both", keyQ = "", custQ = "", kvKey = 
       </table>
     </div>
     <p class="dive-footer">
-      ${fs.length} keys &nbsp;·&nbsp; ${fc.length} customers
+      ${fs.length} keys &nbsp;·&nbsp; ${fc.length} customer${fc.length === 1 ? "" : "s"}
+      ${diffMode ? "&nbsp;·&nbsp; <strong>diff</strong>" : ""}
       ${cloud !== "both" ? `(${esc(cloud)} only)` : ""}
       ${(kvKey || kvValue) ? `&nbsp;·&nbsp; key+val: <em>${esc(kvKey || "*")} ⊇ "${esc(kvValue)}"</em>` : ""}
       &nbsp;·&nbsp; service: <strong>${esc(service)}</strong>
@@ -845,8 +1121,12 @@ async function renderAnomaly() {
       <h2>Anomaly Detection</h2>
       <p style="color:var(--muted);font-size:0.9rem;">
         Find customers or services with an unexpectedly low count of enabled or disabled entries.
+        Customer segment limits which customers are counted (services mode uses the same set for column totals).
       </p>
-      <div class="filters anomaly-filters">
+      <div class="filters anomaly-filters filters-matrix-toolbar">
+        <span class="filter-toolbar-cluster" title="Core / Other customer set">
+          ${coreRadioHTML("an-core")}
+        </span>
         <label>Find
           <select id="an-entity">
             <option value="customers">customers</option>
@@ -875,13 +1155,14 @@ async function renderAnomaly() {
     const entity    = document.getElementById("an-entity").value;
     const threshold = parseInt(document.getElementById("an-threshold").value, 10) || 0;
     const color     = document.getElementById("an-color").value;
+    const segment   = getSegmentMode("an-core");
 
     btn.disabled = true;
     results.innerHTML = '<p style="color:var(--muted);">Loading…</p>';
 
     try {
       const data = await api(
-        `/api/anomaly?entity=${entity}&threshold=${encodeURIComponent(threshold)}&color=${color}`
+        `/api/anomaly?entity=${entity}&threshold=${encodeURIComponent(threshold)}&color=${color}&segment=${encodeURIComponent(segment)}`
       );
 
       if (!data.length) {
@@ -927,6 +1208,7 @@ async function renderAnomaly() {
   }
 
   btn.addEventListener("click", run);
+  document.querySelectorAll('input[name="an-core"]').forEach((r) => r.addEventListener("change", run));
   run(); // auto-run on load
 }
 
@@ -963,6 +1245,10 @@ async function renderAbout() {
 
       <h3>Changelog</h3>
       <ul class="about-changelog">
+        <li><strong>1.0.19</strong> — YAML diff panel: <strong>only-Diff</strong> (context hunks) vs <strong>all</strong> (full YAML with diff colors)</li>
+        <li><strong>1.0.18</strong> — Service Dive: <strong>Diff customers</strong> mode (two dropdowns, matrix shows only those columns); <strong>YamlDiff</strong> button with side-by-side HTML diff of merged service YAML (<code>difflib.HtmlDiff</code>)</li>
+        <li><strong>1.0.17</strong> — Narrower segmented radio controls (cloud / core / service detail) so filter bars fit panel width; toolbar row wraps when needed</li>
+        <li><strong>1.0.16</strong> — Core / Other / All customer segment (default service key <code>clingine</code>, env <code>CVA_CORE_SERVICE</code>); compact cloud + segment controls on Matrix and Service Dive; CSV respects segment; faster dashboard payload (single merged-json query); segment flags stored at scan time</li>
         <li><strong>1.0.15</strong> — Nav order: Services → Service Dive → Anomaly → About; About versioning note and changelog catch-up; feature list order aligned with nav</li>
         <li><strong>1.0.14</strong> — Service detail: Open in Service Dive, All/Green/Red customer filter, customer names link to customer pages</li>
         <li><strong>1.0.13</strong> — INSTALL.md, broader .gitignore, Home path overrides with persistence (<code>data/user_config.json</code>)</li>

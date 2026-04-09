@@ -26,17 +26,18 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "1.0.15"
+VERSION = "1.0.19"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
     customer_public_view,
     dashboard_matrix,
-    list_service_names,
     matrix_csv,
     meta_bundle,
     service_dive,
     service_public_view,
+    service_yaml_diff_payload,
+    services_list_payload,
 )
 from backend.config import (  # noqa: E402
     DB_PATH,
@@ -114,9 +115,11 @@ class Handler(SimpleHTTPRequestHandler):
                     "Customers — browse merged YAML per customer",
                     "Services — browse merged YAML per service across all customers",
                     "Service Dive — 2nd-level key × customer matrix with modal/outlier analysis",
+                    "Diff customers — compare two customers in the matrix; YamlDiff side-by-side YAML (stdlib difflib)",
                     "Anomaly — find customers or services with unusually few enabled/disabled entries",
                     "Key+Value filter — find customers by specific config key values",
-                    "Cloud filter — AWS / Azure / Both toggle on all matrix views",
+                    "Cloud filter — AWS / Azure / Both toggle on matrix views",
+                    "Core / Other — filter by segment service (default: clingine) enabled on the customer",
                     "Click-to-pin — click any matrix cell to pin its YAML tooltip for copy/paste",
                     "CSV export — download the main matrix as CSV",
                     "Paths — override customers root and base values from Home (saved under data/)",
@@ -154,6 +157,7 @@ class Handler(SimpleHTTPRequestHandler):
                         "file_count": len(files),
                         "files": [f["name"] for f in files],
                         "scan_epoch": r["scan_epoch"],
+                        "core": bool(r.get("core_segment", 0)),
                     }
                 )
             self._json(out)
@@ -178,10 +182,16 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/services":
             if not DB_PATH.is_file():
-                self._json([])
+                self._json(
+                    {
+                        "core_service_key": "",
+                        "customer_core": {},
+                        "services": [],
+                    }
+                )
                 return
             with connect(DB_PATH) as conn:
-                self._json(list_service_names(conn))
+                self._json(services_list_payload(conn))
             return
 
         if path == "/api/service":
@@ -213,6 +223,9 @@ class Handler(SimpleHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             entity = (qs.get("entity") or ["customers"])[0]
             color = (qs.get("color") or ["green"])[0]
+            segment = (qs.get("segment") or ["all"])[0]
+            if segment not in ("all", "core", "other"):
+                segment = "all"
             try:
                 threshold = int((qs.get("threshold") or ["5"])[0])
             except ValueError:
@@ -221,7 +234,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json([])
                 return
             with connect(DB_PATH) as conn:
-                self._json(compute_anomaly(conn, entity, threshold, color))
+                self._json(compute_anomaly(conn, entity, threshold, color, segment))
             return
 
         if path == "/api/service-dive":
@@ -241,12 +254,38 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(row)
             return
 
+        if path == "/api/service-yaml-diff":
+            qs = urllib.parse.parse_qs(parsed.query)
+            svc = (qs.get("service") or [""])[0]
+            ca = (qs.get("customer_a") or [""])[0]
+            cb = (qs.get("customer_b") or [""])[0]
+            mode = (qs.get("mode") or ["diff"])[0]
+            if mode not in ("diff", "all"):
+                mode = "diff"
+            if not svc:
+                self._json({"error": "missing service"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not DB_PATH.is_file():
+                self._json({"error": "no database"}, HTTPStatus.NOT_FOUND)
+                return
+            with connect(DB_PATH) as conn:
+                out = service_yaml_diff_payload(conn, svc, ca, cb, mode=mode)
+            if "error" in out:
+                self._json(out, HTTPStatus.BAD_REQUEST)
+                return
+            self._json(out)
+            return
+
         if path == "/api/export/matrix.csv":
             if not DB_PATH.is_file():
                 self._text("", "text/csv", HTTPStatus.NOT_FOUND)
                 return
+            qs = urllib.parse.parse_qs(parsed.query)
+            segment = (qs.get("segment") or ["all"])[0]
+            if segment not in ("all", "core", "other"):
+                segment = "all"
             with connect(DB_PATH) as conn:
-                csv_body = matrix_csv(conn)
+                csv_body = matrix_csv(conn, segment)
             self._text(csv_body, "text/csv; charset=utf-8")
             return
 

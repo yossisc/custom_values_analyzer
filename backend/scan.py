@@ -10,10 +10,10 @@ from typing import Any
 
 import yaml
 
-from backend.config import CLOUD_SUBDIRS, base_values_path, customers_root, ensure_data_dir
+from backend.config import CLOUD_SUBDIRS, CORE_SEGMENT_SERVICE_KEY, base_values_path, customers_root, ensure_data_dir
 from backend.db import connect, meta_set, replace_customers
 from backend.merge import deep_merge
-from backend.services import discover_service_keys, union_sorted
+from backend.services import discover_service_keys, effective_enabled, get_service_block, union_sorted
 
 GLOB_PATTERNS = ("custom_values_*.yaml", "custom_values_*.yml")
 
@@ -127,7 +127,7 @@ def scan_customers(
             "service_keys": [],
         }
 
-    rows: list[tuple[str, list[dict[str, Any]], dict[str, Any]]] = []
+    rows: list[tuple[str, list[dict[str, Any]], dict[str, Any], int]] = []
     errors: list[str] = []
 
     for name, child in _customer_dirs_to_scan(root):
@@ -148,9 +148,11 @@ def scan_customers(
             errors.append(f"{name}: no custom_values_*.yaml could be loaded; skipped")
             continue
 
-        rows.append((name, files_meta, merged))
+        blk = get_service_block(merged, CORE_SEGMENT_SERVICE_KEY)
+        core_seg = 1 if effective_enabled(blk) is True else 0
+        rows.append((name, files_meta, merged, core_seg))
 
-    service_keys = union_sorted(discover_service_keys(m) for _, _, m in rows)
+    service_keys = union_sorted(discover_service_keys(m) for _, _, m, _ in rows)
 
     return {
         "ok": len(errors) == 0 or bool(rows),
@@ -173,11 +175,12 @@ def persist_scan(db_path: Path, report: dict[str, Any]) -> None:
         meta_set(conn, "last_scan_epoch", str(time.time()))
         meta_set(conn, "customers_root", report.get("customers_root", ""))
         meta_set(conn, "cloud_subdirs_scanned", ",".join(CLOUD_SUBDIRS))
-        counts = Counter(n.split("/")[0] for n, _, _ in rows)
+        counts = Counter(n.split("/")[0] for n, _, _, _ in rows)
         meta_set(conn, "customer_counts_by_cloud_json", json.dumps(dict(sorted(counts.items()))))
         meta_set(conn, "base_values_path", report.get("base_values_path", ""))
         meta_set(conn, "service_key_count", str(len(report.get("service_keys") or [])))
         meta_set(conn, "scan_errors_json", json.dumps(report.get("errors") or []))
+        meta_set(conn, "core_segment_service_key", CORE_SEGMENT_SERVICE_KEY)
 
 
 def run_scan_to_db(db_path: Path) -> dict[str, Any]:

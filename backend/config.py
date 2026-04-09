@@ -12,6 +12,10 @@ DEFAULT_BASE_VALUES = Path.home() / "work" / "helm" / "glassbox" / "values.yaml"
 
 CLOUD_SUBDIRS = ("AWS", "Azure")
 
+# Top-level Helm service key used for Core vs Other customer segmentation (enabled: true → Core).
+# Override with env if your chart uses a different key (e.g. cronjobs.foo).
+CORE_SEGMENT_SERVICE_KEY = os.environ.get("CVA_CORE_SERVICE", "clingine")
+
 # App workspace (this repo)
 APP_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = APP_ROOT / "data"
