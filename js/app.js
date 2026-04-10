@@ -333,12 +333,12 @@ function getCloud(groupName) {
   return document.querySelector(`input[name="${groupName}"]:checked`)?.value || "both";
 }
 
-/** Core / Other / All — Core = `core_service_key` enabled for customer. */
+/** Core / others / All — Core = `core_service_key` enabled for customer. */
 function coreRadioHTML(groupName) {
   return `<span class="core-radio-group" role="group" aria-label="Customer segment">
     <label class="radio-lbl"><input type="radio" name="${groupName}" value="all" checked /> All</label>
     <label class="radio-lbl"><input type="radio" name="${groupName}" value="core" /> Core</label>
-    <label class="radio-lbl"><input type="radio" name="${groupName}" value="other" /> Other</label>
+    <label class="radio-lbl"><input type="radio" name="${groupName}" value="other" /> others</label>
   </span>`;
 }
 
@@ -406,7 +406,7 @@ async function renderDashboard() {
     core_service_key: coreKey = "clingine",
   } = data;
 
-  const coreTitle = `Core = customers with ${coreKey} enabled: true; Other = not.`;
+  const coreTitle = `Core = customers with ${coreKey} enabled: true; others = not.`;
 
   app.innerHTML = `
     <div class="legend">
@@ -541,30 +541,76 @@ async function renderCustomers() {
     <div class="panel" style="max-width:36rem;">
       <h2>Customers (${list.length})</h2>
       <div class="filters filters-matrix-toolbar">
-        <span class="filter-toolbar-cluster" title="Core / Other (from last scan)">
+        <span class="filter-toolbar-cluster" title="Cloud">
+          ${cloudRadioHTML("cust-cloud")}
+        </span>
+        <span class="filter-toolbar-cluster" title="Core / others (from last scan)">
           ${coreRadioHTML("cust-core")}
         </span>
         <label>Filter <input type="search" id="f-list" placeholder="name…" autocomplete="off" /></label>
+      </div>
+      <div class="compare-customers-bar">
+        <span class="muted-label compare-bar-label">Compare 2 customers</span>
+        <label class="compare-cust-pair">A
+          <input type="text" id="cmp-a" list="cmp-a-dl" placeholder="customer…" autocomplete="off" spellcheck="false" />
+          <datalist id="cmp-a-dl"></datalist>
+        </label>
+        <label class="compare-cust-pair">B
+          <input type="text" id="cmp-b" list="cmp-b-dl" placeholder="customer…" autocomplete="off" spellcheck="false" />
+          <datalist id="cmp-b-dl"></datalist>
+        </label>
+        <button type="button" class="btn btn-primary" id="cmp-go">Compare</button>
       </div>
       <ul class="customer-list" id="cust-ul"></ul>
     </div>
   `;
 
-  const ul  = document.getElementById("cust-ul");
-  const inp = document.getElementById("f-list");
+  const ul   = document.getElementById("cust-ul");
+  const inp  = document.getElementById("f-list");
+  const cmpA = document.getElementById("cmp-a");
+  const cmpB = document.getElementById("cmp-b");
+  const dlA  = document.getElementById("cmp-a-dl");
+  const dlB  = document.getElementById("cmp-b-dl");
 
-  function paint() {
-    const seg = getSegmentMode("cust-core");
+  function refreshCompareDatalists() {
+    const seg   = getSegmentMode("cust-core");
+    const cloud = getCloud("cust-cloud");
     let rows = list;
     if (seg === "core") rows = rows.filter((x) => x.core);
     else if (seg === "other") rows = rows.filter((x) => !x.core);
+    const names = rows
+      .filter((x) => cloud === "both" || cloudOf(x.name) === cloud)
+      .map((x) => x.name);
+    const opts = names.map((n) => `<option value="${esc(n)}"></option>`).join("");
+    if (dlA) dlA.innerHTML = opts;
+    if (dlB) dlB.innerHTML = opts;
+  }
+
+  function paint() {
+    const seg   = getSegmentMode("cust-core");
+    const cloud = getCloud("cust-cloud");
+    let rows = list;
+    if (seg === "core") rows = rows.filter((x) => x.core);
+    else if (seg === "other") rows = rows.filter((x) => !x.core);
+    rows = rows.filter((x) => cloud === "both" || cloudOf(x.name) === cloud);
     const items = filterList(rows.map((x) => x.name), inp.value);
     ul.innerHTML = items
       .map((name) => `<li><a href="#/customer/${encodeURIComponent(name)}" data-route>${esc(name)}</a></li>`)
       .join("");
+    refreshCompareDatalists();
   }
+
   inp.addEventListener("input", paint);
   document.querySelectorAll('input[name="cust-core"]').forEach((r) => r.addEventListener("change", paint));
+  document.querySelectorAll('input[name="cust-cloud"]').forEach((r) => r.addEventListener("change", paint));
+
+  document.getElementById("cmp-go")?.addEventListener("click", () => {
+    const a = cmpA?.value?.trim() ?? "";
+    const b = cmpB?.value?.trim() ?? "";
+    if (!a || !b || a === b) return;
+    location.hash = `#/compare-customers?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`;
+  });
+
   paint();
 }
 
@@ -581,12 +627,23 @@ async function renderServices() {
   app.innerHTML = `
     <div class="panel" style="max-width:36rem;">
       <h2>Services (${list.length})</h2>
-      <p class="matrix-toolbar-hint" style="margin-top:0;"><span class="muted-label">Segment</span> — Core = service appears in at least one <em>Core</em> customer (${esc(coreKey)} on); Other = at least one <em>Other</em> customer.</p>
+      <p class="matrix-toolbar-hint" style="margin-top:0;"><span class="muted-label">Segment</span> — Core = service appears in at least one <em>Core</em> customer (${esc(coreKey)} on); <em>others</em> = at least one non-core customer.</p>
       <div class="filters filters-matrix-toolbar">
+        <span class="filter-toolbar-cluster" title="Cloud">
+          ${cloudRadioHTML("svc-cloud")}
+        </span>
         <span class="filter-toolbar-cluster" title="Limit by customer segment">
           ${coreRadioHTML("svc-core")}
         </span>
-        <label>Filter <input type="search" id="f-svc-list" placeholder="service key…" autocomplete="off" /></label>
+        <label class="svc-filter-wrap">Filter
+          <span class="svc-filter-inline">
+            <select id="svc-filter-mode" class="svc-filter-mode" aria-label="Name match">
+              <option value="contains">contains</option>
+              <option value="not_contains">not contains</option>
+            </select>
+            <input type="search" id="f-svc-list" placeholder="service key…" autocomplete="off" />
+          </span>
+        </label>
       </div>
       <ul class="customer-list" id="svc-ul"></ul>
     </div>
@@ -596,17 +653,33 @@ async function renderServices() {
   const inp = document.getElementById("f-svc-list");
 
   function paint() {
-    const seg = getSegmentMode("svc-core");
+    const seg   = getSegmentMode("svc-core");
+    const cloud = getCloud("svc-cloud");
+    const mode  = document.getElementById("svc-filter-mode")?.value || "contains";
     let rows = list;
     if (seg === "core") rows = rows.filter((x) => x.in_core);
     else if (seg === "other") rows = rows.filter((x) => x.in_other);
-    const items = filterList(rows.map((x) => x.name), inp.value);
-    ul.innerHTML = items
+    if (cloud === "AWS") rows = rows.filter((x) => x.in_aws);
+    else if (cloud === "Azure") rows = rows.filter((x) => x.in_azure);
+
+    const q = inp.value.trim().toLowerCase();
+    let names = rows.map((x) => x.name);
+    if (q) {
+      names = names.filter((name) => {
+        const low = name.toLowerCase();
+        const hit = low.includes(q);
+        return mode === "contains" ? hit : !hit;
+      });
+    }
+    names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    ul.innerHTML = names
       .map((name) => `<li><a href="#/service/${encodeURIComponent(name)}" data-route>${esc(name)}</a></li>`)
       .join("");
   }
   inp.addEventListener("input", paint);
+  document.getElementById("svc-filter-mode")?.addEventListener("change", paint);
   document.querySelectorAll('input[name="svc-core"]').forEach((r) => r.addEventListener("change", paint));
+  document.querySelectorAll('input[name="svc-cloud"]').forEach((r) => r.addEventListener("change", paint));
   paint();
 }
 
@@ -715,17 +788,19 @@ async function renderService(name) {
 
 // ──────────────────────────────────────────────────────── Service Dive ──────
 
+function _kvCellValueMatches(cell, vLow) {
+  if (!cell || cell.is_missing) return false;
+  return cell.display.toLowerCase().includes(vLow) || cell.yaml.toLowerCase().includes(vLow);
+}
+
 /**
- * Filter customers to those that have a cell whose key name contains `kvKey`
- * AND whose display / yaml value contains `kvValue`.
- * - Both empty  → no-op (return fc unchanged).
- * - Only kvKey  → keep customers that have that key and it is not missing.
- * - Only kvValue→ keep customers where any key's value contains kvValue.
- * - Both set    → keep customers where the matching key's value contains kvValue.
+ * Filter customers by key name substring and/or value substring on matching rows.
+ * `kvRelation`: "contains" | "not_contains" — applies when `kvValue` is non-empty; ignored otherwise.
  */
-function filterCustomersByKV(data, fc, kvKey, kvValue) {
+function filterCustomersByKV(data, fc, kvKey, kvValue, kvRelation = "contains") {
   const kLow = kvKey.trim().toLowerCase();
   const vLow = kvValue.trim().toLowerCase();
+  const negate = Boolean(vLow) && kvRelation === "not_contains";
   if (!kLow && !vLow) return fc;
 
   return fc.filter((cust) => {
@@ -733,13 +808,15 @@ function filterCustomersByKV(data, fc, kvKey, kvValue) {
       ? data.matrix.filter((row) => row.key.toLowerCase().includes(kLow))
       : data.matrix;
 
-    return matchingRows.some((row) => {
-      const cell = row.by_customer[cust];
-      if (!cell || cell.is_missing) return false;
-      if (!vLow) return true;                                         // key matched, no value constraint
-      return cell.display.toLowerCase().includes(vLow)
-          || cell.yaml.toLowerCase().includes(vLow);
-    });
+    if (!vLow) {
+      return matchingRows.some((row) => {
+        const cell = row.by_customer[cust];
+        return cell && !cell.is_missing;
+      });
+    }
+
+    const anyVal = matchingRows.some((row) => _kvCellValueMatches(row.by_customer[cust], vLow));
+    return negate ? !anyVal : anyVal;
   });
 }
 
@@ -759,32 +836,61 @@ function recomputeModal(rowData, fc) {
   return { modal_val, modal_pct: parseFloat(((modal_count / fc.length) * 100).toFixed(1)) };
 }
 
-/** Repopulate Service Dive diff dropdowns; keep valid values; avoid A === B when possible. */
-function syncDiveDiffSelects(pool, cloud) {
-  const selA = document.getElementById("dive-diff-a");
-  const selB = document.getElementById("dive-diff-b");
-  if (!selA || !selB) return;
-  const va = selA.value;
-  const vb = selB.value;
-  const opt = (c) =>
-    `<option value="${esc(c)}">${esc(displayCustomerName(c, cloud))}</option>`;
-  const head = '<option value="">— choose —</option>';
-  selA.innerHTML = head + pool.map(opt).join("");
-  selB.innerHTML = head + pool.map(opt).join("");
-  if (pool.includes(va)) selA.value = va;
-  else selA.value = pool[0] || "";
-  if (pool.includes(vb)) selB.value = vb;
-  else selB.value = pool.length >= 2 ? pool[1] : pool[0] || "";
-  if (selA.value && selA.value === selB.value && pool.length >= 2) {
-    const other = pool.find((c) => c !== selA.value);
-    if (other) selB.value = other;
+/** Repopulate Service Dive customer comboboxes (datalist); keep valid values; avoid A === B when possible. */
+function syncDiveDiffInputs(pool, cloud) {
+  const aIn = document.getElementById("dive-diff-a");
+  const bIn = document.getElementById("dive-diff-b");
+  const dlA = document.getElementById("dive-diff-a-dl");
+  const dlB = document.getElementById("dive-diff-b-dl");
+  if (!aIn || !bIn) return;
+  void cloud;
+  const va = aIn.value.trim();
+  const vb = bIn.value.trim();
+  const opt = (c) => `<option value="${esc(c)}">${esc(displayCustomerName(c, cloud))}</option>`;
+  const body = pool.map(opt).join("");
+  if (dlA) dlA.innerHTML = body;
+  if (dlB) dlB.innerHTML = body;
+  if (pool.includes(va)) aIn.value = va;
+  else aIn.value = pool[0] || "";
+  if (pool.includes(vb)) bIn.value = vb;
+  else bIn.value = pool.length >= 2 ? pool[1] : pool[0] || "";
+  if (aIn.value && aIn.value === bIn.value && pool.length >= 2) {
+    const other = pool.find((c) => c !== aIn.value);
+    if (other) bIn.value = other;
   }
 }
 
+/** @param {"service"|"full"} kind */
+function buildYamlDiffPanelInner(res, m, kind, serviceLabel) {
+  const title =
+    kind === "full"
+      ? "<strong>YAML diff</strong> — <em>full merged values</em>"
+      : `<strong>YAML diff</strong> — <code>${esc(serviceLabel || res.service || "")}</code>`;
+  return `<div class="panel yaml-diff-inner yaml-diff-surface">
+      <div class="yaml-diff-toolbar">
+        <span>${title}</span>
+        <span class="yaml-diff-scope-wrap" role="group" aria-label="YAML scope">
+          <span class="yaml-diff-scope-label">View</span>
+          <span class="cloud-radio-group yaml-diff-scope-radios">
+            <label class="radio-lbl"><input type="radio" name="yaml-diff-scope" value="diff" ${m === "diff" ? "checked" : ""} /> only-Diff</label>
+            <label class="radio-lbl"><input type="radio" name="yaml-diff-scope" value="all" ${m === "all" ? "checked" : ""} /> all</label>
+          </span>
+        </span>
+        <span class="yaml-diff-labels"><span>${esc(res.left)}</span> · <span>${esc(res.right)}</span></span>
+        ${kind === "service" ? '<button type="button" class="btn" id="dive-yaml-diff-close">Close</button>' : ""}
+      </div>
+      <p class="yaml-diff-mode-hint">${m === "all" ? "Full YAML on both sides; changed lines use diff colors." : "Changed lines only — identical lines are hidden."}</p>
+      <p class="yaml-diff-resize-hint">Drag the lower-right corner to resize the diff panel.</p>
+      <div class="yaml-diff-resize-shell">
+        <div class="yaml-diff-table-wrap">${res.html}</div>
+      </div>
+    </div>`;
+}
+
 async function runServiceDiveYamlDiff(modeArg) {
-  const svc = document.getElementById("dive-select")?.value;
-  const a = document.getElementById("dive-diff-a")?.value;
-  const b = document.getElementById("dive-diff-b")?.value;
+  const svc = document.getElementById("dive-select-input")?.value?.trim();
+  const a = document.getElementById("dive-diff-a")?.value?.trim();
+  const b = document.getElementById("dive-diff-b")?.value?.trim();
   const panel = document.getElementById("dive-yaml-diff-panel");
   if (!svc || !panel) return;
 
@@ -809,22 +915,7 @@ async function runServiceDiveYamlDiff(modeArg) {
       return;
     }
     const m = res.mode === "all" ? "all" : "diff";
-    panel.innerHTML = `<div class="panel yaml-diff-inner yaml-diff-surface">
-      <div class="yaml-diff-toolbar">
-        <span><strong>YAML diff</strong> — <code>${esc(res.service)}</code></span>
-        <span class="yaml-diff-scope-wrap" role="group" aria-label="YAML scope">
-          <span class="yaml-diff-scope-label">View</span>
-          <span class="cloud-radio-group yaml-diff-scope-radios">
-            <label class="radio-lbl"><input type="radio" name="yaml-diff-scope" value="diff" ${m === "diff" ? "checked" : ""} /> only-Diff</label>
-            <label class="radio-lbl"><input type="radio" name="yaml-diff-scope" value="all" ${m === "all" ? "checked" : ""} /> all</label>
-          </span>
-        </span>
-        <span class="yaml-diff-labels"><span>${esc(res.left)}</span> · <span>${esc(res.right)}</span></span>
-        <button type="button" class="btn" id="dive-yaml-diff-close">Close</button>
-      </div>
-      <p class="yaml-diff-mode-hint">${m === "all" ? "Full YAML on both sides; changed lines use diff colors." : "Hunks with a few lines of context (default)."}</p>
-      <div class="yaml-diff-table-wrap">${res.html}</div>
-    </div>`;
+    panel.innerHTML = buildYamlDiffPanelInner(res, m, "service", svc);
     document.getElementById("dive-yaml-diff-close")?.addEventListener("click", () => {
       panel.classList.add("hidden");
       panel.innerHTML = "";
@@ -832,6 +923,65 @@ async function runServiceDiveYamlDiff(modeArg) {
   } catch (e) {
     panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">${esc(String(e))}</p></div>`;
   }
+}
+
+async function runCustomerYamlDiffPage(panel, a, b, modeArg) {
+  const mode =
+    modeArg === "diff" || modeArg === "all"
+      ? modeArg
+      : (panel.querySelector('input[name="yaml-diff-scope"]:checked')?.value || "diff");
+
+  if (!a || !b || a === b) {
+    panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">Select two different customers.</p></div>`;
+    return;
+  }
+  panel.innerHTML = `<div class="panel yaml-diff-inner"><p style="color:var(--muted)">Generating diff…</p></div>`;
+  try {
+    const res = await api(
+      `/api/customer-yaml-diff?customer_a=${encodeURIComponent(a)}&customer_b=${encodeURIComponent(b)}&mode=${encodeURIComponent(mode)}`,
+    );
+    if (res.error) {
+      panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">${esc(res.error)}</p></div>`;
+      return;
+    }
+    const m = res.mode === "all" ? "all" : "diff";
+    panel.innerHTML = buildYamlDiffPanelInner(res, m, "full", "");
+  } catch (e) {
+    panel.innerHTML = `<div class="panel yaml-diff-inner"><p class="error-banner">${esc(String(e))}</p></div>`;
+  }
+}
+
+async function renderCompareCustomers(ca, cb) {
+  app.innerHTML = `
+    <div class="panel compare-customers-page">
+      <h2>Compare 2 customers</h2>
+      <p style="color:var(--muted);font-size:0.9rem;">Merged values (base + overlays). Read-only side-by-side diff.</p>
+      <div class="filters compare-customers-toolbar">
+        <label>Customer A
+          <input type="text" id="cc-a" value="${esc(ca)}" autocomplete="off" spellcheck="false" />
+        </label>
+        <label>Customer B
+          <input type="text" id="cc-b" value="${esc(cb)}" autocomplete="off" spellcheck="false" />
+        </label>
+        <button type="button" class="btn btn-primary" id="cc-run">Update diff</button>
+      </div>
+      <div id="cc-yaml-panel" class="compare-yaml-panel"></div>
+    </div>
+  `;
+
+  const panel = document.getElementById("cc-yaml-panel");
+
+  async function run(modeArg) {
+    const a = document.getElementById("cc-a")?.value?.trim() || "";
+    const b = document.getElementById("cc-b")?.value?.trim() || "";
+    await runCustomerYamlDiffPage(panel, a, b, modeArg);
+  }
+
+  panel.addEventListener("change", (e) => {
+    if (e.target?.name === "yaml-diff-scope") run(e.target.value);
+  });
+  document.getElementById("cc-run")?.addEventListener("click", () => run());
+  await run();
 }
 
 async function renderServiceDive(preselect = "") {
@@ -842,7 +992,7 @@ async function renderServiceDive(preselect = "") {
   const coreKey = payload.core_service_key || "clingine";
   const serviceList = payload.services || [];
   const names = serviceList.map((s) => s.name);
-  const diveCoreTitle = `Core = ${coreKey} enabled: true; Other = not.`;
+  const diveCoreTitle = `Core = ${coreKey} enabled: true; others = not.`;
   let diveData = null;
 
   app.innerHTML = `
@@ -853,12 +1003,20 @@ async function renderServiceDive(preselect = "") {
           Select a service to explore its 2nd-level config keys across all customers.
           Hover over a cell for the full YAML subtree &nbsp;·&nbsp; click to pin.
         </p>
-        <div class="filters">
-          <label>Service
-            <select id="dive-select" style="min-width:16rem;">
-              <option value="">— choose a service —</option>
-              ${names.map((n) => `<option value="${esc(n)}" ${n === preselect ? "selected" : ""}>${esc(n)}</option>`).join("")}
-            </select>
+        <div class="filters dive-service-pick">
+          <label class="dive-service-pick-label">Service
+            <input
+              type="text"
+              id="dive-select-input"
+              class="dive-select-input"
+              list="dive-select-datalist"
+              placeholder="Type to filter…"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <datalist id="dive-select-datalist">
+              ${names.map((n) => `<option value="${esc(n)}"></option>`).join("")}
+            </datalist>
           </label>
         </div>
         <div class="dive-filter-mode-wrap hidden" id="dive-filter-mode-wrap">
@@ -870,7 +1028,13 @@ async function renderServiceDive(preselect = "") {
           <span id="dive-gemini-status-pill" class="dive-gemini-pill hidden" title="Whether a Gemini API key is available on the server"></span>
         </div>
         <div class="filters dive-subfilters filters-matrix-toolbar hidden" id="dive-subfilters">
-          <div class="dive-manual-only filters" id="dive-manual-text-filters">
+          <span class="filter-toolbar-cluster" title="Cloud">
+            ${cloudRadioHTML("dive-cloud")}
+          </span>
+          <span class="filter-toolbar-cluster" title="${esc(diveCoreTitle)}">
+            ${coreRadioHTML("dive-core")}
+          </span>
+          <div class="dive-manual-only filters dive-text-filters-row" id="dive-manual-text-filters">
             <label>Filter keys
               <input type="search" id="dive-fkey" placeholder="key name…" autocomplete="off" />
             </label>
@@ -878,17 +1042,6 @@ async function renderServiceDive(preselect = "") {
               <input type="search" id="dive-fcust" placeholder="customer…" autocomplete="off" />
             </label>
           </div>
-          <span class="filter-toolbar-cluster" title="Cloud">
-            ${cloudRadioHTML("dive-cloud")}
-          </span>
-          <span class="filter-toolbar-cluster" title="${esc(diveCoreTitle)}">
-            ${coreRadioHTML("dive-core")}
-          </span>
-          <span class="dive-legend">
-            <span class="dive-pill modal">■</span>&nbsp;= same as majority &nbsp;&nbsp;
-            <span class="dive-pill outlier">■</span>&nbsp;= different &nbsp;&nbsp;
-            <span class="dive-pill missing">—</span>&nbsp;= not set
-          </span>
         </div>
         <p class="matrix-toolbar-hint dive-segment-hint hidden" id="dive-seg-hint"><span class="muted-label">Segment</span> — ${esc(diveCoreTitle)}</p>
         <div class="dive-ai-panel hidden" id="dive-ai-panel">
@@ -916,19 +1069,27 @@ async function renderServiceDive(preselect = "") {
         <div class="kv-row dive-manual-only hidden" id="dive-kv-row">
           <span class="kv-label">Filter key+value</span>
           <input type="search" id="dive-kvkey" placeholder="key…" autocomplete="off" class="kv-input" />
-          <span class="kv-contains">contains</span>
+          <label class="kv-relation-label">
+            <span class="sr-only">Value relation</span>
+            <select id="dive-kv-relation" class="kv-relation-select" aria-label="Value matches">
+              <option value="contains">contains</option>
+              <option value="not_contains">not contains</option>
+            </select>
+          </label>
           <input type="search" id="dive-kvval" placeholder="value…" autocomplete="off" class="kv-input kv-val" />
         </div>
         <div class="dive-diff-row dive-manual-only hidden" id="dive-diff-row">
           <label class="dive-diff-check">
-            <input type="checkbox" id="dive-diff-mode" autocomplete="off" /> Diff customers
+            <input type="checkbox" id="dive-diff-mode" autocomplete="off" /> Diff 2 customers
           </label>
           <span id="dive-diff-picks" class="dive-diff-picks hidden">
             <label>Customer A
-              <select id="dive-diff-a"></select>
+              <input type="text" id="dive-diff-a" class="dive-diff-combo" list="dive-diff-a-dl" placeholder="customer…" autocomplete="off" spellcheck="false" />
+              <datalist id="dive-diff-a-dl"></datalist>
             </label>
             <label>Customer B
-              <select id="dive-diff-b"></select>
+              <input type="text" id="dive-diff-b" class="dive-diff-combo" list="dive-diff-b-dl" placeholder="customer…" autocomplete="off" spellcheck="false" />
+              <datalist id="dive-diff-b-dl"></datalist>
             </label>
             <button type="button" class="btn" id="dive-yaml-diff-btn">YamlDiff</button>
           </span>
@@ -938,7 +1099,7 @@ async function renderServiceDive(preselect = "") {
     </div>
   `;
 
-  const selectEl   = document.getElementById("dive-select");
+  const diveSelectInput = document.getElementById("dive-select-input");
   const subfilters = document.getElementById("dive-subfilters");
   const kvRow      = document.getElementById("dive-kv-row");
   const bodyEl     = document.getElementById("dive-body");
@@ -981,11 +1142,15 @@ async function renderServiceDive(preselect = "") {
     const custQ   = document.getElementById("dive-fcust")?.value  || "";
     const kvKey   = document.getElementById("dive-kvkey")?.value  || "";
     const kvValue = document.getElementById("dive-kvval")?.value  || "";
+    const kvRel =
+      document.getElementById("dive-kv-relation")?.value === "not_contains"
+        ? "not_contains"
+        : "contains";
     const diffMode = document.getElementById("dive-diff-mode")?.checked;
 
     let pool = diveData.customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
     pool = filterCustomersBySegment(pool, diveData.customer_core || {}, segment);
-    if (diffMode) syncDiveDiffSelects(pool, cloud);
+    if (diffMode) syncDiveDiffInputs(pool, cloud);
 
     const diffA = document.getElementById("dive-diff-a")?.value?.trim() || "";
     const diffB = document.getElementById("dive-diff-b")?.value?.trim() || "";
@@ -999,6 +1164,7 @@ async function renderServiceDive(preselect = "") {
         custQ: diffMode ? "" : custQ,
         kvKey,
         kvValue,
+        kvRelation: kvRel,
         diffMode,
         diffCustomerA: diffA,
         diffCustomerB: diffB,
@@ -1007,11 +1173,27 @@ async function renderServiceDive(preselect = "") {
     );
   }
 
-  selectEl.addEventListener("change", () => loadDive(selectEl.value));
+  const nameSet = new Set(names);
+  function resolveDiveServicePick() {
+    const v = diveSelectInput?.value?.trim() ?? "";
+    if (!v) {
+      loadDive("");
+      return;
+    }
+    if (nameSet.has(v)) loadDive(v);
+  }
+  diveSelectInput?.addEventListener("change", resolveDiveServicePick);
+  diveSelectInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      resolveDiveServicePick();
+    }
+  });
 
   async function loadDive(serviceName) {
     if (!serviceName) {
       bodyEl.innerHTML = "";
+      if (diveSelectInput) diveSelectInput.value = "";
       subfilters.classList.add("hidden");
       kvRow.classList.add("hidden");
       document.getElementById("dive-seg-hint")?.classList.add("hidden");
@@ -1056,6 +1238,7 @@ async function renderServiceDive(preselect = "") {
         ["dive-fkey", "dive-fcust", "dive-kvkey", "dive-kvval"].forEach((id) =>
           document.getElementById(id).addEventListener("input", paintDive)
         );
+        document.getElementById("dive-kv-relation")?.addEventListener("change", paintDive);
         document.querySelectorAll('input[name="dive-cloud"]').forEach((r) =>
           r.addEventListener("change", paintDive)
         );
@@ -1075,6 +1258,8 @@ async function renderServiceDive(preselect = "") {
         });
         document.getElementById("dive-diff-a")?.addEventListener("change", paintDive);
         document.getElementById("dive-diff-b")?.addEventListener("change", paintDive);
+        document.getElementById("dive-diff-a")?.addEventListener("input", paintDive);
+        document.getElementById("dive-diff-b")?.addEventListener("input", paintDive);
         document.getElementById("dive-yaml-diff-btn")?.addEventListener("click", () => {
           runServiceDiveYamlDiff();
         });
@@ -1168,7 +1353,10 @@ async function renderServiceDive(preselect = "") {
     }
   }
 
-  if (preselect && names.includes(preselect)) loadDive(preselect);
+  if (preselect && names.includes(preselect) && diveSelectInput) {
+    diveSelectInput.value = preselect;
+    loadDive(preselect);
+  }
 }
 
 /**
@@ -1185,6 +1373,7 @@ function renderDiveTable(
     custQ = "",
     kvKey = "",
     kvValue = "",
+    kvRelation = "contains",
     diffMode = false,
     diffCustomerA = "",
     diffCustomerB = "",
@@ -1203,7 +1392,7 @@ function renderDiveTable(
     const b = diffCustomerB;
     if (!a || !b || a === b) {
       container.innerHTML =
-        '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Check <strong>Diff customers</strong> and choose two different customers.</p></div>';
+        '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Check <strong>Diff 2 customers</strong> and choose two different customers.</p></div>';
       return;
     }
     if (!pool.includes(a) || !pool.includes(b)) {
@@ -1212,7 +1401,7 @@ function renderDiveTable(
       return;
     }
     fc = [a, b];
-    fc = filterCustomersByKV(data, fc, kvKey, kvValue);
+    fc = filterCustomersByKV(data, fc, kvKey, kvValue, kvRelation);
     if (fc.length < 2) {
       container.innerHTML =
         '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Key+value filter removed one of the two customers; clear or relax it.</p></div>';
@@ -1222,7 +1411,7 @@ function renderDiveTable(
     fc = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
     fc = filterCustomersBySegment(fc, customerCore, segment);
     fc = fc.filter((c) => !custQ.trim() || c.toLowerCase().includes(custQ.toLowerCase()));
-    fc = filterCustomersByKV(data, fc, kvKey, kvValue);
+    fc = filterCustomersByKV(data, fc, kvKey, kvValue, kvRelation);
   }
 
   const fs = matrix.filter((row) => !keyQ.trim() || row.key.toLowerCase().includes(keyQ.toLowerCase()));
@@ -1270,20 +1459,37 @@ function renderDiveTable(
     </tr>`;
   });
 
+  let kvFoot = "";
+  if (kvKey.trim() || kvValue.trim()) {
+    if (kvValue.trim()) {
+      const rel = kvRelation === "not_contains" ? "not contains" : "contains";
+      kvFoot = `&nbsp;·&nbsp; key+val: <em>${esc(kvKey || "*")} ${rel} "${esc(kvValue.trim())}"</em>`;
+    } else {
+      kvFoot = `&nbsp;·&nbsp; key: <em>${esc(kvKey.trim())}</em>`;
+    }
+  }
+
   container.innerHTML = `
-    <div class="matrix-wrap">
-      <table class="matrix dive-matrix">
-        <thead>${thead}</thead>
-        <tbody>${rows.join("")}</tbody>
-      </table>
+    <div class="dive-matrix-stack">
+      <div class="dive-legend dive-legend-above" aria-label="Legend">
+        <span class="dive-pill modal">■</span>&nbsp;= same as majority &nbsp;&nbsp;
+        <span class="dive-pill outlier">■</span>&nbsp;= different &nbsp;&nbsp;
+        <span class="dive-pill missing">—</span>&nbsp;= not set
+      </div>
+      <div class="matrix-wrap">
+        <table class="matrix dive-matrix">
+          <thead>${thead}</thead>
+          <tbody>${rows.join("")}</tbody>
+        </table>
+      </div>
+      <p class="dive-footer">
+        ${fs.length} keys &nbsp;·&nbsp; ${fc.length} customer${fc.length === 1 ? "" : "s"}
+        ${diffMode ? "&nbsp;·&nbsp; <strong>diff</strong>" : ""}
+        ${cloud !== "both" ? `&nbsp;·&nbsp; (${esc(cloud)} only)` : ""}
+        ${kvFoot}
+        &nbsp;·&nbsp; service: <strong>${esc(service)}</strong>
+      </p>
     </div>
-    <p class="dive-footer">
-      ${fs.length} keys &nbsp;·&nbsp; ${fc.length} customer${fc.length === 1 ? "" : "s"}
-      ${diffMode ? "&nbsp;·&nbsp; <strong>diff</strong>" : ""}
-      ${cloud !== "both" ? `(${esc(cloud)} only)` : ""}
-      ${(kvKey || kvValue) ? `&nbsp;·&nbsp; key+val: <em>${esc(kvKey || "*")} ⊇ "${esc(kvValue)}"</em>` : ""}
-      &nbsp;·&nbsp; service: <strong>${esc(service)}</strong>
-    </p>
   `;
 
   container.querySelectorAll("td.dive-cell").forEach((td) => {
@@ -1308,7 +1514,7 @@ async function renderAnomaly() {
         Customer segment limits which customers are counted (services mode uses the same set for column totals).
       </p>
       <div class="filters anomaly-filters filters-matrix-toolbar">
-        <span class="filter-toolbar-cluster" title="Core / Other customer set">
+        <span class="filter-toolbar-cluster" title="Core / others customer set">
           ${coreRadioHTML("an-core")}
         </span>
         <label>Find
@@ -1429,7 +1635,9 @@ async function renderAbout() {
 
       <h3>Changelog</h3>
       <ul class="about-changelog">
-        <li><strong>1.0.19</strong> — YAML diff panel: <strong>only-Diff</strong> (context hunks) vs <strong>all</strong> (full YAML with diff colors)</li>
+        <li><strong>2.0.2</strong> — Service Dive legend back <strong>above</strong> the matrix; YAML diff panels wider (override default <code>.panel</code> cap) + <strong>resizable</strong> diff area (drag lower-right corner)</li>
+        <li><strong>2.0.1</strong> — <strong>Service Dive AI</strong> (Gemini) on the 2.0 line; <strong>only-Diff</strong> shows changed lines only (no identical context); Customers/Services: cloud + segment filters, service key contains/not contains; <strong>Compare 2 customers</strong> (full merged YAML diff); UI labels <strong>others</strong>, <strong>Diff 2 customers</strong>, combobox service picker</li>
+        <li><strong>1.0.19</strong> — YAML diff panel: <strong>only-Diff</strong> vs <strong>all</strong> (full YAML with diff colors)</li>
         <li><strong>1.0.18</strong> — Service Dive: <strong>Diff customers</strong> mode (two dropdowns, matrix shows only those columns); <strong>YamlDiff</strong> button with side-by-side HTML diff of merged service YAML (<code>difflib.HtmlDiff</code>)</li>
         <li><strong>1.0.17</strong> — Narrower segmented radio controls (cloud / core / service detail) so filter bars fit panel width; toolbar row wraps when needed</li>
         <li><strong>1.0.16</strong> — Core / Other / All customer segment (default service key <code>clingine</code>, env <code>CVA_CORE_SERVICE</code>); compact cloud + segment controls on Matrix and Service Dive; CSV respects segment; faster dashboard payload (single merged-json query); segment flags stored at scan time</li>
@@ -1457,23 +1665,64 @@ async function renderAbout() {
 
 // ─────────────────────────────────────────────────────────────── Router ──────
 
+function parseHashRoute() {
+  const raw = (location.hash || "#/").slice(1);
+  const q = raw.indexOf("?");
+  const pathOnly = q >= 0 ? raw.slice(0, q) : raw;
+  const search = q >= 0 ? raw.slice(q + 1) : "";
+  const params = new URLSearchParams(search);
+  const parts = pathOnly.split("/").filter(Boolean);
+  return { parts, params };
+}
+
+function setActiveNav() {
+  const { parts } = parseHashRoute();
+  const first = parts[0] || "";
+  document.querySelectorAll("#nav a[data-route]").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    const m = href.match(/^#\/([^/?]*)/);
+    const seg = m ? m[1] : "";
+    let active = false;
+    if (!first) {
+      active = href === "#/" || href === "#";
+    } else if (first === "compare-customers") {
+      active = seg === "customers";
+    } else {
+      active = seg === first;
+    }
+    link.classList.toggle("nav-active", active);
+  });
+}
+
 function route() {
-  const h = (location.hash || "#/").slice(1);
-  const parts = h.split("/").filter(Boolean);
+  const { parts, params } = parseHashRoute();
   const [a, ...rest] = parts;
 
   unfreezeTooltip();
 
-  if (!a || a === "")             return renderHome();
-  if (a === "dashboard")          return renderDashboard();
-  if (a === "customers")          return renderCustomers();
-  if (a === "services")           return renderServices();
-  if (a === "anomaly")            return renderAnomaly();
-  if (a === "about")              return renderAbout();
-  if (a === "dive")               return renderServiceDive(rest[0] ? decodeURIComponent(rest.join("/")) : "");
-  if (a === "customer" && rest[0]) return renderCustomer(decodeURIComponent(rest.join("/")));
-  if (a === "service"  && rest[0]) return renderService(decodeURIComponent(rest.join("/")));
-  renderHome();
+  if (!a || a === "") {
+    renderHome();
+    setActiveNav();
+    return;
+  }
+  if (a === "compare-customers") {
+    const ca = params.get("a") || "";
+    const cb = params.get("b") || "";
+    if (ca && cb) void renderCompareCustomers(ca, cb);
+    else renderCustomers();
+    setActiveNav();
+    return;
+  }
+  if (a === "dashboard") renderDashboard();
+  else if (a === "customers") renderCustomers();
+  else if (a === "services") renderServices();
+  else if (a === "anomaly") renderAnomaly();
+  else if (a === "about") renderAbout();
+  else if (a === "dive") renderServiceDive(rest[0] ? decodeURIComponent(rest.join("/")) : "");
+  else if (a === "customer" && rest[0]) renderCustomer(decodeURIComponent(rest.join("/")));
+  else if (a === "service" && rest[0]) renderService(decodeURIComponent(rest.join("/")));
+  else renderHome();
+  setActiveNav();
 }
 
 window.addEventListener("hashchange", route);

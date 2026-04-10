@@ -65,6 +65,12 @@ code {
   text-decoration: underline;
 }
 
+.nav a.nav-active {
+  font-weight: 600;
+  text-decoration: underline;
+  color: var(--text);
+}
+
 .main {
   padding: 1.5rem;
   max-width: 100%;
@@ -690,11 +696,136 @@ code {
   min-width: 14rem;
 }
 
-.kv-contains {
-  font-size: 0.75rem;
-  color: var(--muted);
+.kv-relation-label {
+  margin: 0;
+}
+
+.kv-relation-select {
+  font-size: 0.76rem;
+  padding: 0.28rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  max-width: 10rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
-  font-style: italic;
+  border: 0;
+}
+
+.dive-service-pick-label {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.dive-select-input {
+  min-width: 16rem;
+  max-width: 32rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.88rem;
+}
+
+.dive-text-filters-row {
+  flex: 1 1 100%;
+}
+
+.dive-matrix-stack {
+  width: 100%;
+}
+
+.dive-legend-above {
+  margin: 0 0 0.55rem;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.dive-diff-combo {
+  min-width: 11rem;
+  max-width: 20rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.compare-customers-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.45rem 0.65rem;
+  margin-bottom: 0.85rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.compare-bar-label {
+  width: 100%;
+  font-size: 0.78rem;
+  margin-bottom: -0.15rem;
+}
+
+.compare-cust-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.compare-cust-pair input {
+  min-width: 11rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.svc-filter-wrap .svc-filter-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.svc-filter-mode {
+  font-size: 0.78rem;
+  padding: 0.32rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+}
+
+.compare-customers-page {
+  max-width: 100%;
+}
+
+.compare-yaml-panel {
+  margin-top: 0.75rem;
 }
 
 /* Service Dive — AI filter (Gemini → structured filters) */
@@ -891,10 +1022,24 @@ code {
 
 .yaml-diff-panel {
   margin-top: 0.85rem;
+  width: 100%;
+  max-width: min(96vw, 100%);
+  box-sizing: border-box;
 }
 
 .yaml-diff-panel.hidden {
   display: none;
+}
+
+/* Default .panel max-width would squeeze side-by-side diffs */
+.panel.yaml-diff-inner {
+  max-width: min(96vw, 100%);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.compare-customers-page.panel {
+  max-width: min(96vw, 100%);
 }
 
 .yaml-diff-toolbar {
@@ -936,6 +1081,34 @@ code {
   line-height: 1.35;
 }
 
+.yaml-diff-resize-hint {
+  font-size: 0.68rem;
+  color: var(--muted);
+  margin: -0.25rem 0 0.45rem;
+  line-height: 1.35;
+}
+
+.yaml-diff-resize-shell {
+  resize: both;
+  overflow: auto;
+  box-sizing: border-box;
+  min-width: min(92vw, 52rem);
+  width: 100%;
+  min-height: 14rem;
+  max-height: min(82vh, 52rem);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.yaml-diff-resize-shell .yaml-diff-table-wrap {
+  max-height: none;
+  overflow: visible;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
 .yaml-diff-table-wrap {
   overflow: auto;
   max-height: min(72vh, 50rem);
@@ -945,7 +1118,8 @@ code {
 }
 
 .yaml-diff-table-wrap table.diff {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-family: var(--mono);
   font-size: 0.66rem;
@@ -1006,7 +1180,10 @@ code {
 .core-radio-group .radio-lbl {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.1rem;
+  flex: 1 1 0;
+  min-width: 0;
   padding: 0.12rem 0.26rem;
   cursor: pointer;
   user-select: none;

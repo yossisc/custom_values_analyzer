@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "1.0.22"
+VERSION = "2.0.2"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
@@ -36,6 +36,7 @@ from backend.api_payloads import (  # noqa: E402
     meta_bundle,
     service_dive,
     service_public_view,
+    customer_yaml_diff_payload,
     service_yaml_diff_payload,
     services_list_payload,
 )
@@ -132,12 +133,13 @@ class Handler(SimpleHTTPRequestHandler):
                     "Customers — browse merged YAML per customer",
                     "Services — browse merged YAML per service across all customers",
                     "Service Dive — 2nd-level key × customer matrix with modal/outlier analysis",
-                    "Service Dive AI — optional Gemini natural-language → same structured filters (BYO API key)",
-                    "Diff customers — compare two customers in the matrix; YamlDiff side-by-side YAML (stdlib difflib)",
+                    "Service Dive AI (2.0+) — optional Gemini natural-language → same structured filters (BYO API key)",
+                    "Service Dive — Diff 2 customers (matrix columns); YamlDiff side-by-side service YAML (stdlib difflib)",
+                    "Compare 2 customers — full merged values.yaml diff (side-by-side)",
                     "Anomaly — find customers or services with unusually few enabled/disabled entries",
                     "Key+Value filter — find customers by specific config key values",
                     "Cloud filter — AWS / Azure / Both toggle on matrix views",
-                    "Core / Other — filter by segment service (default: clingine) enabled on the customer",
+                    "Core / others — filter by segment service (default: clingine) enabled on the customer",
                     "Click-to-pin — click any matrix cell to pin its YAML tooltip for copy/paste",
                     "CSV export — download the main matrix as CSV",
                     "Paths — override customers root and base values from Home (saved under data/)",
@@ -288,6 +290,27 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             with connect(DB_PATH) as conn:
                 out = service_yaml_diff_payload(conn, svc, ca, cb, mode=mode)
+            if "error" in out:
+                self._json(out, HTTPStatus.BAD_REQUEST)
+                return
+            self._json(out)
+            return
+
+        if path == "/api/customer-yaml-diff":
+            qs = urllib.parse.parse_qs(parsed.query)
+            ca = (qs.get("customer_a") or [""])[0]
+            cb = (qs.get("customer_b") or [""])[0]
+            mode = (qs.get("mode") or ["diff"])[0]
+            if mode not in ("diff", "all"):
+                mode = "diff"
+            if not ca or not cb:
+                self._json({"error": "missing customer"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not DB_PATH.is_file():
+                self._json({"error": "no database"}, HTTPStatus.NOT_FOUND)
+                return
+            with connect(DB_PATH) as conn:
+                out = customer_yaml_diff_payload(conn, ca, cb, mode=mode)
             if "error" in out:
                 self._json(out, HTTPStatus.BAD_REQUEST)
                 return

@@ -135,7 +135,23 @@ def services_list_payload(conn) -> dict[str, Any]:
         inother = any(
             (not customer_core.get(c)) and sk in keys_by_customer[c] for c in merged_by_name
         )
-        items.append({"name": sk, "in_core": incore, "in_other": inother})
+        in_aws = any(
+            ("/" in c and c.split("/", 1)[0] == "AWS" and sk in keys_by_customer[c])
+            for c in merged_by_name
+        )
+        in_azure = any(
+            ("/" in c and c.split("/", 1)[0] == "Azure" and sk in keys_by_customer[c])
+            for c in merged_by_name
+        )
+        items.append(
+            {
+                "name": sk,
+                "in_core": incore,
+                "in_other": inother,
+                "in_aws": in_aws,
+                "in_azure": in_azure,
+            }
+        )
     return {
         "core_service_key": core_key,
         "customer_core": customer_core,
@@ -335,7 +351,8 @@ def service_yaml_diff_payload(
     for two customers (stdlib :mod:`difflib.HtmlDiff`).
 
     ``mode``:
-    - ``diff`` — context view (hunks + a few lines of context), default.
+    - ``diff`` — changed lines only (no identical context) via HtmlDiff context mode
+      with ``numlines=0``.
     - ``all`` — full YAML on both sides; changed lines still colored via HtmlDiff.
     """
     if mode not in ("diff", "all"):
@@ -380,10 +397,63 @@ def service_yaml_diff_payload(
         fromdesc=customer_a,
         todesc=customer_b,
         context=use_context,
-        numlines=3,
+        numlines=0 if use_context else 5,
     )
     return {
         "service": service_key,
+        "left": customer_a,
+        "right": customer_b,
+        "mode": mode,
+        "html": table,
+    }
+
+
+def customer_yaml_diff_payload(
+    conn,
+    customer_a: str,
+    customer_b: str,
+    *,
+    mode: str = "diff",
+) -> dict[str, Any]:
+    """
+    Side-by-side HTML diff of full merged ``values.yaml`` for two customers.
+
+    ``mode``: same semantics as :func:`service_yaml_diff_payload`.
+    """
+    if mode not in ("diff", "all"):
+        return {"error": "mode must be 'diff' or 'all'"}
+    if not customer_a or not customer_b:
+        return {"error": "customer_a and customer_b are required"}
+    if customer_a == customer_b:
+        return {"error": "choose two different customers"}
+
+    merged_by_name, _, _ = _load_merged_and_core(conn)
+    if customer_a not in merged_by_name:
+        return {"error": f"unknown customer: {customer_a}"}
+    if customer_b not in merged_by_name:
+        return {"error": f"unknown customer: {customer_b}"}
+
+    yaml_a = dump_yaml(merged_by_name[customer_a], max_len=MERGED_YAML_MAX)
+    yaml_b = dump_yaml(merged_by_name[customer_b], max_len=MERGED_YAML_MAX)
+    lines_a = yaml_a.splitlines(True)
+    lines_b = yaml_b.splitlines(True)
+
+    try:
+        differ = HtmlDiff(tabsize=2, wrapcolumn=96)
+    except TypeError:
+        differ = HtmlDiff(tabsize=2)
+
+    use_context = mode != "all"
+
+    table = differ.make_table(
+        lines_a,
+        lines_b,
+        fromdesc=customer_a,
+        todesc=customer_b,
+        context=use_context,
+        numlines=0 if use_context else 5,
+    )
+    return {
         "left": customer_a,
         "right": customer_b,
         "mode": mode,
