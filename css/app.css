@@ -697,6 +697,139 @@ code {
   font-style: italic;
 }
 
+/* Service Dive — AI filter (Gemini → structured filters) */
+.dive-filter-mode-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-top: 0.65rem;
+  padding: 0.45rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.dive-filter-mode-wrap .muted-label {
+  font-size: 0.78rem;
+}
+
+.dive-filter-mode-radios {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+}
+
+.dive-gemini-pill {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg);
+}
+
+.dive-gemini-pill-warn {
+  border-color: #7f1d1d;
+  color: #fca5a5;
+  background: rgba(127, 29, 29, 0.2);
+}
+
+.dive-ai-panel {
+  margin-top: 0.55rem;
+  padding: 0.65rem 0.85rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.dive-ai-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.dive-ai-textarea {
+  width: 100%;
+  max-width: 48rem;
+  min-height: 4.5rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.dive-ai-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  margin-top: 0.45rem;
+}
+
+.dive-ai-explanation {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 0.45rem 0 0;
+  line-height: 1.35;
+}
+
+.dive-ai-explanation-error {
+  color: #fca5a5;
+}
+
+.dive-gemini-settings {
+  margin-top: 0.65rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.dive-gemini-settings summary {
+  cursor: pointer;
+  color: var(--text);
+  user-select: none;
+}
+
+.dive-gemini-hint {
+  margin: 0.4rem 0 0.5rem;
+  line-height: 1.4;
+}
+
+.dive-gemini-key-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.45rem;
+}
+
+.dive-gemini-input {
+  flex: 1;
+  min-width: 12rem;
+  max-width: 28rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.82rem;
+}
+
+.dive-gemini-keyfile {
+  max-width: 36rem;
+}
+
+#dive-gemini-key-clear {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+}
+
 /* Service Dive — diff two customers + YAML diff panel */
 .dive-diff-row {
   display: flex;

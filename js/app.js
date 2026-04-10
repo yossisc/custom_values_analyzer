@@ -123,6 +123,39 @@ async function api(path, opts = {}) {
   return ct.includes("application/json") ? res.json() : res.text();
 }
 
+/** POST JSON and parse JSON; throws Error with server message on failure. */
+async function apiPostJson(path, jsonBody) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(jsonBody),
+  });
+  const ct = res.headers.get("content-type") || "";
+  let data;
+  try {
+    data = ct.includes("application/json") ? await res.json() : { raw: await res.text() };
+  } catch {
+    data = {};
+  }
+  if (!res.ok) {
+    const msg = data.error || data.raw || res.statusText;
+    throw new Error(typeof msg === "string" ? msg : JSON.stringify(data));
+  }
+  if (data && data.ok === false && data.error) {
+    throw new Error(String(data.error));
+  }
+  return data;
+}
+
+function setRadioByValue(groupName, value) {
+  document.querySelectorAll(`input[name="${groupName}"]`).forEach((r) => {
+    r.checked = r.value === value;
+  });
+}
+
 function esc(s) {
   const d = document.createElement("div");
   d.textContent = String(s ?? "");
@@ -828,13 +861,23 @@ async function renderServiceDive(preselect = "") {
             </select>
           </label>
         </div>
+        <div class="dive-filter-mode-wrap hidden" id="dive-filter-mode-wrap">
+          <span class="muted-label">Filters</span>
+          <span class="dive-filter-mode-radios" role="group" aria-label="Filter mode">
+            <label class="radio-lbl"><input type="radio" name="dive-filter-mode" value="manual" checked /> Manual</label>
+            <label class="radio-lbl"><input type="radio" name="dive-filter-mode" value="ai" /> AI (Gemini)</label>
+          </span>
+          <span id="dive-gemini-status-pill" class="dive-gemini-pill hidden" title="Whether a Gemini API key is available on the server"></span>
+        </div>
         <div class="filters dive-subfilters filters-matrix-toolbar hidden" id="dive-subfilters">
-          <label>Filter keys
-            <input type="search" id="dive-fkey" placeholder="key name…" autocomplete="off" />
-          </label>
-          <label id="dive-fcust-wrap">Filter customers
-            <input type="search" id="dive-fcust" placeholder="customer…" autocomplete="off" />
-          </label>
+          <div class="dive-manual-only filters" id="dive-manual-text-filters">
+            <label>Filter keys
+              <input type="search" id="dive-fkey" placeholder="key name…" autocomplete="off" />
+            </label>
+            <label id="dive-fcust-wrap">Filter customers
+              <input type="search" id="dive-fcust" placeholder="customer…" autocomplete="off" />
+            </label>
+          </div>
           <span class="filter-toolbar-cluster" title="Cloud">
             ${cloudRadioHTML("dive-cloud")}
           </span>
@@ -848,13 +891,35 @@ async function renderServiceDive(preselect = "") {
           </span>
         </div>
         <p class="matrix-toolbar-hint dive-segment-hint hidden" id="dive-seg-hint"><span class="muted-label">Segment</span> — ${esc(diveCoreTitle)}</p>
-        <div class="kv-row hidden" id="dive-kv-row">
+        <div class="dive-ai-panel hidden" id="dive-ai-panel">
+          <label class="dive-ai-label" for="dive-ai-query">Describe what to show</label>
+          <textarea id="dive-ai-query" class="dive-ai-textarea" rows="3" placeholder="Example: Azure customers where replicas is 3, or any row mentioning 500m CPU…" autocomplete="off"></textarea>
+          <div class="dive-ai-actions">
+            <button type="button" class="btn btn-primary" id="dive-ai-apply">Interpret &amp; apply</button>
+            <span id="dive-ai-busy" class="hidden muted">Working…</span>
+          </div>
+          <p id="dive-ai-explanation" class="dive-ai-explanation" hidden></p>
+          <details class="dive-gemini-settings">
+            <summary>API key &amp; key file path</summary>
+            <p class="dive-gemini-hint">Your key stays on this machine. Saved keys are written to <code>data/.gemini_api_key</code> (under <code>data/</code>, not committed). By default the app uses free-tier-friendly models (<code>gemini-2.5-flash-lite</code>, then <code>gemini-2.5-flash</code>, then <code>gemini-3-flash-preview</code>) and skips deprecated 2.0. Override with env <code>GEMINI_MODEL</code> or a comma list <code>GEMINI_MODEL_FALLBACKS</code>. You can also set <code>GEMINI_API_KEY</code> / <code>GOOGLE_API_KEY</code> or key-file env vars, or store a path below.</p>
+            <div class="dive-gemini-key-row">
+              <input type="password" id="dive-gemini-key-input" placeholder="AIza… (Google AI API key)" autocomplete="off" class="dive-gemini-input" />
+              <button type="button" class="btn" id="dive-gemini-key-save">Save key</button>
+            </div>
+            <div class="dive-gemini-key-row">
+              <input type="text" id="dive-gemini-keyfile" placeholder="/absolute/path/to/gemini_api_key.txt" class="dive-gemini-input dive-gemini-keyfile" autocomplete="off" />
+              <button type="button" class="btn" id="dive-gemini-keyfile-save">Save path</button>
+            </div>
+            <button type="button" class="btn" id="dive-gemini-key-clear">Remove saved key file</button>
+          </details>
+        </div>
+        <div class="kv-row dive-manual-only hidden" id="dive-kv-row">
           <span class="kv-label">Filter key+value</span>
           <input type="search" id="dive-kvkey" placeholder="key…" autocomplete="off" class="kv-input" />
           <span class="kv-contains">contains</span>
           <input type="search" id="dive-kvval" placeholder="value…" autocomplete="off" class="kv-input kv-val" />
         </div>
-        <div class="dive-diff-row hidden" id="dive-diff-row">
+        <div class="dive-diff-row dive-manual-only hidden" id="dive-diff-row">
           <label class="dive-diff-check">
             <input type="checkbox" id="dive-diff-mode" autocomplete="off" /> Diff customers
           </label>
@@ -878,6 +943,33 @@ async function renderServiceDive(preselect = "") {
   const kvRow      = document.getElementById("dive-kv-row");
   const bodyEl     = document.getElementById("dive-body");
   let subfiltersWired = false;
+
+  function setDiveFilterMode(mode) {
+    const manual = mode === "manual";
+    document.querySelectorAll(".dive-manual-only").forEach((el) => {
+      el.classList.toggle("hidden", !manual);
+    });
+    const ai = document.getElementById("dive-ai-panel");
+    if (ai) ai.classList.toggle("hidden", manual);
+  }
+
+  async function refreshDiveGeminiStatus() {
+    const pill = document.getElementById("dive-gemini-status-pill");
+    try {
+      const s = await api("/api/gemini/status");
+      if (pill) {
+        pill.classList.remove("hidden");
+        pill.textContent = s.configured ? "Gemini key available" : "No Gemini key on server";
+        pill.classList.toggle("dive-gemini-pill-warn", !s.configured);
+      }
+    } catch {
+      if (pill) {
+        pill.classList.remove("hidden");
+        pill.textContent = "Could not read API status";
+        pill.classList.add("dive-gemini-pill-warn");
+      }
+    }
+  }
 
   function paintDive() {
     if (!diveData) return;
@@ -924,6 +1016,11 @@ async function renderServiceDive(preselect = "") {
       kvRow.classList.add("hidden");
       document.getElementById("dive-seg-hint")?.classList.add("hidden");
       document.getElementById("dive-diff-row")?.classList.add("hidden");
+      document.getElementById("dive-filter-mode-wrap")?.classList.add("hidden");
+      document.getElementById("dive-ai-panel")?.classList.add("hidden");
+      const mRadio = document.querySelector('input[name="dive-filter-mode"][value="manual"]');
+      if (mRadio) mRadio.checked = true;
+      setDiveFilterMode("manual");
       return;
     }
     bodyEl.innerHTML = '<p style="padding:0.5rem 0;color:var(--muted);">Loading…</p>';
@@ -937,6 +1034,11 @@ async function renderServiceDive(preselect = "") {
       kvRow.classList.remove("hidden");
       document.getElementById("dive-seg-hint")?.classList.remove("hidden");
       document.getElementById("dive-diff-row")?.classList.remove("hidden");
+      document.getElementById("dive-filter-mode-wrap")?.classList.remove("hidden");
+      const mRadio = document.querySelector('input[name="dive-filter-mode"][value="manual"]');
+      if (mRadio) mRadio.checked = true;
+      setDiveFilterMode("manual");
+      void refreshDiveGeminiStatus();
       const dm = document.getElementById("dive-diff-mode");
       if (dm) dm.checked = false;
       document.getElementById("dive-diff-picks")?.classList.add("hidden");
@@ -975,6 +1077,88 @@ async function renderServiceDive(preselect = "") {
         document.getElementById("dive-diff-b")?.addEventListener("change", paintDive);
         document.getElementById("dive-yaml-diff-btn")?.addEventListener("click", () => {
           runServiceDiveYamlDiff();
+        });
+        document.querySelectorAll('input[name="dive-filter-mode"]').forEach((r) =>
+          r.addEventListener("change", () => {
+            const mode = document.querySelector('input[name="dive-filter-mode"]:checked')?.value || "manual";
+            setDiveFilterMode(mode);
+          }),
+        );
+        document.getElementById("dive-ai-apply")?.addEventListener("click", async () => {
+          const q = document.getElementById("dive-ai-query")?.value?.trim();
+          const expl = document.getElementById("dive-ai-explanation");
+          const busy = document.getElementById("dive-ai-busy");
+          if (!q || !diveData?.service) {
+            if (expl) {
+              expl.hidden = false;
+              expl.textContent = "Enter a description first.";
+              expl.classList.add("dive-ai-explanation-error");
+            }
+            return;
+          }
+          busy?.classList.remove("hidden");
+          if (expl) expl.classList.remove("dive-ai-explanation-error");
+          try {
+            const res = await apiPostJson("/api/service-dive/nl-filter", {
+              service: diveData.service,
+              query: q,
+            });
+            const f = res.filter || {};
+            const fk = document.getElementById("dive-fkey");
+            const fc = document.getElementById("dive-fcust");
+            const kk = document.getElementById("dive-kvkey");
+            const kv = document.getElementById("dive-kvval");
+            if (fk) fk.value = f.keyQ || "";
+            if (fc) fc.value = f.custQ || "";
+            if (kk) kk.value = f.kvKey || "";
+            if (kv) kv.value = f.kvValue || "";
+            setRadioByValue("dive-cloud", f.cloud || "both");
+            setRadioByValue("dive-core", f.segment || "all");
+            if (expl) {
+              expl.hidden = !f.explanation;
+              expl.textContent = f.explanation || "";
+              expl.classList.remove("dive-ai-explanation-error");
+            }
+            paintDive();
+          } catch (err) {
+            if (expl) {
+              expl.hidden = false;
+              expl.textContent = String(err?.message || err);
+              expl.classList.add("dive-ai-explanation-error");
+            }
+          } finally {
+            busy?.classList.add("hidden");
+          }
+        });
+        document.getElementById("dive-gemini-key-save")?.addEventListener("click", async () => {
+          const inp = document.getElementById("dive-gemini-key-input");
+          const k = inp?.value?.trim();
+          if (!k) return;
+          try {
+            await apiPostJson("/api/gemini/settings", { api_key: k });
+            inp.value = "";
+            await refreshDiveGeminiStatus();
+          } catch (err) {
+            alert(String(err?.message || err));
+          }
+        });
+        document.getElementById("dive-gemini-keyfile-save")?.addEventListener("click", async () => {
+          const inp = document.getElementById("dive-gemini-keyfile");
+          const p = inp?.value?.trim() || "";
+          try {
+            await apiPostJson("/api/gemini/settings", { gemini_key_file: p });
+            await refreshDiveGeminiStatus();
+          } catch (err) {
+            alert(String(err?.message || err));
+          }
+        });
+        document.getElementById("dive-gemini-key-clear")?.addEventListener("click", async () => {
+          try {
+            await apiPostJson("/api/gemini/settings", { clear_saved_key: true });
+            await refreshDiveGeminiStatus();
+          } catch (err) {
+            alert(String(err?.message || err));
+          }
         });
       }
       paintDive();

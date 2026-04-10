@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "1.0.19"
+VERSION = "1.0.22"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
@@ -43,15 +43,32 @@ from backend.config import (  # noqa: E402
     DB_PATH,
     PID_FILE,
     base_values_path,
+    clear_saved_gemini_api_key_file,
     customers_root,
     ensure_data_dir,
+    resolve_gemini_api_key,
+    save_gemini_api_key_to_data_file,
     save_user_config,
+    saved_gemini_key_path,
+    set_user_gemini_key_file,
+    user_config_gemini_key_file_path,
 )
 from backend.db import connect, list_customers  # noqa: E402
+from backend.gemini_nl import build_service_dive_nl_context, call_gemini_nl_filter  # noqa: E402
 from backend.scan import run_scan_to_db  # noqa: E402
 
 # Module-level server reference so /api/stop can shut it down
 _httpd: ThreadingHTTPServer | None = None
+
+
+def _gemini_status_payload() -> dict:
+    key, source = resolve_gemini_api_key()
+    return {
+        "configured": key is not None,
+        "source": source,
+        "saved_key_file_exists": saved_gemini_key_path().is_file(),
+        "user_key_file_configured": user_config_gemini_key_file_path() is not None,
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -115,6 +132,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "Customers — browse merged YAML per customer",
                     "Services — browse merged YAML per service across all customers",
                     "Service Dive — 2nd-level key × customer matrix with modal/outlier analysis",
+                    "Service Dive AI — optional Gemini natural-language → same structured filters (BYO API key)",
                     "Diff customers — compare two customers in the matrix; YamlDiff side-by-side YAML (stdlib difflib)",
                     "Anomaly — find customers or services with unusually few enabled/disabled entries",
                     "Key+Value filter — find customers by specific config key values",
@@ -289,6 +307,10 @@ class Handler(SimpleHTTPRequestHandler):
             self._text(csv_body, "text/csv; charset=utf-8")
             return
 
+        if path == "/api/gemini/status":
+            self._json(_gemini_status_payload())
+            return
+
         return SimpleHTTPRequestHandler.do_GET(self)
 
     # ----------------------------------------------------------------- POST --
@@ -350,6 +372,74 @@ class Handler(SimpleHTTPRequestHandler):
                     _httpd.shutdown()
 
             threading.Thread(target=_shutdown_soon, daemon=True).start()
+            return
+
+        if parsed.path == "/api/gemini/settings":
+            try:
+                payload = json.loads(body or b"{}")
+            except Exception:
+                self._json({"ok": False, "error": "invalid JSON"}, HTTPStatus.BAD_REQUEST)
+                return
+            if payload.get("clear_saved_key"):
+                clear_saved_gemini_api_key_file()
+            apk = payload.get("api_key")
+            if isinstance(apk, str) and apk.strip():
+                save_gemini_api_key_to_data_file(apk.strip())
+            if "gemini_key_file" in payload or "openai_key_file" in payload:
+                v = payload.get("gemini_key_file")
+                if v is None:
+                    v = payload.get("openai_key_file")
+                if v is None or (isinstance(v, str) and not str(v).strip()):
+                    set_user_gemini_key_file(None)
+                elif isinstance(v, str):
+                    set_user_gemini_key_file(v.strip())
+            out = _gemini_status_payload()
+            out["ok"] = True
+            self._json(out)
+            return
+
+        if parsed.path == "/api/service-dive/nl-filter":
+            try:
+                payload = json.loads(body or b"{}")
+            except Exception:
+                self._json({"ok": False, "error": "invalid JSON"}, HTTPStatus.BAD_REQUEST)
+                return
+            svc = (payload.get("service") or "").strip()
+            query = (payload.get("query") or "").strip()
+            if not svc:
+                self._json({"ok": False, "error": "missing service"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not query:
+                self._json({"ok": False, "error": "missing query"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not DB_PATH.is_file():
+                self._json({"ok": False, "error": "no database"}, HTTPStatus.NOT_FOUND)
+                return
+            api_key, _src = resolve_gemini_api_key()
+            if not api_key:
+                self._json(
+                    {
+                        "ok": False,
+                        "error": "Gemini API key not configured. Set GEMINI_API_KEY or "
+                        "GOOGLE_API_KEY, GEMINI_API_KEY_FILE / GOOGLE_API_KEY_FILE, save a key "
+                        "under data/.gemini_api_key, or set gemini_key_file in the UI / "
+                        "user_config.json.",
+                    },
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+            with connect(DB_PATH) as conn:
+                dive = service_dive(conn, svc)
+            if dive is None:
+                self._json({"ok": False, "error": "service not found"}, HTTPStatus.NOT_FOUND)
+                return
+            ctx = build_service_dive_nl_context(dive)
+            try:
+                filt, model_used = call_gemini_nl_filter(api_key, query, ctx)
+            except (RuntimeError, ValueError) as ex:
+                self._json({"ok": False, "error": str(ex)}, HTTPStatus.BAD_GATEWAY)
+                return
+            self._json({"ok": True, "filter": filt, "model": model_used})
             return
 
         self.send_error(HTTPStatus.NOT_FOUND)
