@@ -123,6 +123,17 @@ async function api(path, opts = {}) {
   return ct.includes("application/json") ? res.json() : res.text();
 }
 
+/** Same as `api`, but aborts the request after `ms` milliseconds. */
+async function apiWithTimeout(path, ms) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await api(path, { signal: ctrl.signal });
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
 /** POST JSON and parse JSON; throws Error with server message on failure. */
 async function apiPostJson(path, jsonBody) {
   const res = await fetch(path, {
@@ -358,6 +369,52 @@ function filterCustomersBySegment(customers, customerCore, mode) {
     if (mode === "core") return isCore;
     return !isCore;
   });
+}
+
+/** Match Prometheus `Customer` label to a row from `/api/customers` (full name or `Cloud/slug`). */
+function matchCustomerRowFromScan(promCustomer, custRows) {
+  if (!custRows?.length) return null;
+  const pc = String(promCustomer ?? "");
+  return (
+    custRows.find((r) => r.name === pc) ||
+    custRows.find((r) => {
+      const n = r.name;
+      const i = n.indexOf("/");
+      return i > 0 && n.slice(i + 1) === pc;
+    }) ||
+    null
+  );
+}
+
+/** @param {string[]} promCustomers @param {object[]} custRows */
+function coreFlagsForPromCustomers(promCustomers, custRows) {
+  /** @type {Record<string, boolean>} */
+  const m = {};
+  for (const c of promCustomers) {
+    const row = matchCustomerRowFromScan(c, custRows);
+    m[c] = row ? !!row.core : false;
+  }
+  return m;
+}
+
+function promCustomerPassesCloudFilter(promCustomer, cloud, custRows) {
+  if (!cloud || cloud === "both") return true;
+  const row = matchCustomerRowFromScan(promCustomer, custRows);
+  if (!row) return false;
+  return cloudOf(row.name) === cloud;
+}
+
+/**
+ * @param {string} name
+ * @param {string} q
+ * @param {"contains"|"not_contains"} mode
+ */
+function nameMatchesMode(name, q, mode) {
+  const t = String(q ?? "").trim();
+  if (!t) return true;
+  const low = String(name ?? "").toLowerCase();
+  const hit = low.includes(t.toLowerCase());
+  return mode === "contains" ? hit : !hit;
 }
 
 // ──────────────────────────────────────────────── Matrix / dashboard page ──────
@@ -1602,6 +1659,299 @@ async function renderAnomaly() {
   run(); // auto-run on load
 }
 
+// ─────────────────────────────────────────────── GB_Versions / K8S_Versions ──────
+
+const PROM_VERSION_MATRIX_FETCH_MS = 32_000;
+
+const K8S_ROW_SEP = "\x1f";
+
+/**
+ * @param {"gb"|"k8s"} kind
+ */
+async function renderPrometheusMatrixPage(kind) {
+  const isGb = kind === "gb";
+  const prefix = isGb ? "gbv" : "k8v";
+  const apiPath = isGb ? "/api/glassbox-versions" : "/api/k8s-versions";
+  const cornerTh = isGb ? "glassboxVersion" : "cluster · k8s_version · region";
+  const rowFilterLabel = isGb ? "Filter versions" : "Filter rows";
+  const intro = isGb
+    ? `<p style="color:var(--muted);font-size:0.88rem;margin:0;">
+        Live counts from Prometheus:
+        <code>count by (glassboxVersion, Customer) (node_exporter_build_info)</code>.
+        Each cell is how many nodes report that <code>glassboxVersion</code> for the customer.
+        Set <code>CVA_PROMETHEUS_URL</code> to override the instant-query endpoint (defaults to mgmt).
+      </p>`
+    : `<p style="color:var(--muted);font-size:0.88rem;margin:0;">
+        Kubernetes version counts (only customers that expose <code>k8s_version</code> on the labeled scrape):
+        <code>count by (Customer, cluster, k8s_version, region) (node_exporter_build_info{job="node-exporter-for-nodeType-label",k8s_version!=""})</code>.
+        Columns are only customers present in this result. Set <code>CVA_PROMETHEUS_URL</code> to override the query endpoint.
+      </p>`;
+
+  const segmentHint = isGb
+    ? `<p class="matrix-toolbar-hint" style="margin-top:0;">
+        <span class="muted-label">Customers</span> — <strong>Core only</strong>: customers with <code id="${prefix}-core-key">clingine</code> enabled in the last scan.
+        Cloud filter uses scanned names matched to Prometheus <code>Customer</code> labels (unmatched labels are hidden when AWS or Azure is selected).
+      </p>`
+    : `<p class="matrix-toolbar-hint" style="margin-top:0;">
+        <span class="muted-label">Segment</span> — Core = customers with <code id="${prefix}-core-key">clingine</code> enabled in the last scan; <em>others</em> = not.
+        Cloud and segment use scanned customer names matched to Prometheus <code>Customer</code> labels (unmatched labels are hidden when AWS or Azure is selected).
+      </p>`;
+
+  const coreRadios = isGb
+    ? ""
+    : `<span class="filter-toolbar-cluster" title="Limit by customer segment">${coreRadioHTML(`${prefix}-core`)}</span>`;
+
+  app.innerHTML = `
+    <div class="panel" style="max-width:100%;">${intro}</div>
+    ${segmentHint}
+    <div class="filters filters-matrix-toolbar">
+      <span class="filter-toolbar-cluster" title="Cloud">${cloudRadioHTML(`${prefix}-cloud`)}</span>
+      ${coreRadios}
+      <label class="svc-filter-wrap">${rowFilterLabel}
+        <span class="svc-filter-inline">
+          <select id="${prefix}-row-mode" class="svc-filter-mode" aria-label="Row match">
+            <option value="contains">contains</option>
+            <option value="not_contains">not contains</option>
+          </select>
+          <input type="search" id="${prefix}-row-q" placeholder="substring…" autocomplete="off" />
+        </span>
+      </label>
+      <label class="svc-filter-wrap">Filter customers
+        <span class="svc-filter-inline">
+          <select id="${prefix}-cust-mode" class="svc-filter-mode" aria-label="Customer match">
+            <option value="contains">contains</option>
+            <option value="not_contains">not contains</option>
+          </select>
+          <input type="search" id="${prefix}-cust-q" placeholder="substring…" autocomplete="off" />
+        </span>
+      </label>
+      <button type="button" class="btn" id="${prefix}-refresh">Refresh</button>
+    </div>
+    <p class="matrix-toolbar-hint"><span class="muted-label">Timeout</span> — server stops waiting on Prometheus after 30s; this page cancels the fetch after 32s.</p>
+    <p class="matrix-toolbar-hint" style="margin-top:0;"><span class="muted-label">Tip</span> — click a <strong>version</strong> (row) or <strong>customer</strong> (column) header to highlight; click again to clear.</p>
+    <div class="matrix-wrap" id="${prefix}-wrap"></div>
+  `;
+
+  const wrap = document.getElementById(`${prefix}-wrap`);
+  const rowModeEl = document.getElementById(`${prefix}-row-mode`);
+  const rowQEl = document.getElementById(`${prefix}-row-q`);
+  const custModeEl = document.getElementById(`${prefix}-cust-mode`);
+  const custQEl = document.getElementById(`${prefix}-cust-q`);
+  const btn = document.getElementById(`${prefix}-refresh`);
+
+  let lastPoints = [];
+  let lastLoadError = null;
+  /** @type {object[]} */
+  let custRows = [];
+  /** @type {string | null} internal row key (glassboxVersion or K8S composite) */
+  let highlightRowKey = null;
+  /** @type {string | null} Prometheus Customer label */
+  let highlightColCustomer = null;
+
+  function buildMatrixState(points) {
+    if (isGb) {
+      const totals = new Map();
+      const verSet = new Set();
+      const custSet = new Set();
+      for (const p of points) {
+        const c = p.customer;
+        const v = p.version;
+        if (!c || !v) continue;
+        custSet.add(c);
+        verSet.add(v);
+        const k = `${v}\x00${c}`;
+        totals.set(k, (totals.get(k) || 0) + (Number(p.count) || 0));
+      }
+      const rowKeys = [...verSet].sort((a, b) => b.localeCompare(a));
+      const customers = [...custSet].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+      return {
+        rowKeys,
+        customers,
+        rowLabel: (rk) => rk,
+        totals,
+        cellKey: (rk, cust) => `${rk}\x00${cust}`,
+        cellTip: (rk, cust, n) => `${cust} · ${rk} · ${n} nodes`,
+      };
+    }
+    const totals = new Map();
+    const custSet = new Set();
+    /** @type {Map<string, string>} */
+    const rowLabels = new Map();
+    for (const p of points) {
+      const c = p.customer;
+      const kv = p.k8s_version;
+      if (!c || !kv) continue;
+      const cluster = p.cluster != null ? String(p.cluster) : "";
+      const region = p.region != null ? String(p.region) : "";
+      const rk = [cluster, kv, region].join(K8S_ROW_SEP);
+      if (!rowLabels.has(rk)) {
+        rowLabels.set(rk, `${cluster} · ${kv} · ${region}`);
+      }
+      custSet.add(c);
+      const ck = `${rk}\x00${c}`;
+      totals.set(ck, (totals.get(ck) || 0) + (Number(p.count) || 0));
+    }
+    const rowKeys = [...rowLabels.keys()].sort((ka, kb) => {
+      const [ca, va, ra] = ka.split(K8S_ROW_SEP);
+      const [cb, vb, rb] = kb.split(K8S_ROW_SEP);
+      return (
+        vb.localeCompare(va) ||
+        ca.localeCompare(cb, undefined, { sensitivity: "base" }) ||
+        ra.localeCompare(rb, undefined, { sensitivity: "base" })
+      );
+    });
+    const customers = [...custSet].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+    return {
+      rowKeys,
+      customers,
+      rowLabel: (rk) => rowLabels.get(rk) || rk,
+      totals,
+      cellKey: (rk, cust) => `${rk}\x00${cust}`,
+      cellTip: (rk, cust, n) => `${cust} · ${rowLabels.get(rk) || rk} · ${n} nodes`,
+    };
+  }
+
+  function paint() {
+    if (lastLoadError) return;
+    const base = buildMatrixState(lastPoints);
+    const cloud = getCloud(`${prefix}-cloud`);
+    const seg = isGb ? "core" : getSegmentMode(`${prefix}-core`);
+    const rowMode = /** @type {"contains"|"not_contains"} */ (rowModeEl.value || "contains");
+    const custMode = /** @type {"contains"|"not_contains"} */ (custModeEl.value || "contains");
+    const rowQ = rowQEl.value;
+    const custQ = custQEl.value;
+
+    let customers = filterCustomersBySegment(
+      base.customers,
+      coreFlagsForPromCustomers(base.customers, custRows),
+      seg
+    );
+    customers = customers.filter((c) => promCustomerPassesCloudFilter(c, cloud, custRows));
+    customers = customers.filter((c) => nameMatchesMode(c, custQ, custMode));
+
+    const rowKeys = base.rowKeys.filter((rk) =>
+      nameMatchesMode(base.rowLabel(rk), rowQ, rowMode)
+    );
+
+    if (highlightRowKey != null && !rowKeys.includes(highlightRowKey)) highlightRowKey = null;
+    if (highlightColCustomer != null && !customers.includes(highlightColCustomer)) {
+      highlightColCustomer = null;
+    }
+
+    if (lastPoints.length === 0) {
+      wrap.innerHTML =
+        '<p style="padding:1rem;color:var(--muted);">No data returned (empty result or load error).</p>';
+      return;
+    }
+    if (rowKeys.length === 0 || customers.length === 0) {
+      wrap.innerHTML = '<p style="padding:1rem;color:var(--muted);">No rows to show for the current filters.</p>';
+      return;
+    }
+
+    const thead = `<tr>
+      <th class="corner">${esc(cornerTh)}</th>
+      ${customers
+        .map((c) => {
+          const label = displayCustomerName(c, cloud);
+          const colHi = c === highlightColCustomer ? " matrix-col-highlight" : "";
+          return `<th class="customer-h pmv-col-head${colHi}" data-pmv-col="${encodeURIComponent(c)}" title="${esc(c)}"><span>${esc(label)}</span></th>`;
+        })
+        .join("")}
+    </tr>`;
+
+    const rows = rowKeys.map((rk) => {
+      const label = base.rowLabel(rk);
+      const rowHi = rk === highlightRowKey ? " matrix-row-highlight" : "";
+      const encRk = encodeURIComponent(rk);
+      const cells = customers.map((cust) => {
+        const n = base.totals.get(base.cellKey(rk, cust)) || 0;
+        const tip = base.cellTip(rk, cust, n);
+        const inner = n > 0 ? `<span class="ver-count-num">${esc(String(n))}</span>` : "";
+        const colHi = cust === highlightColCustomer ? " matrix-col-highlight" : "";
+        return `<td class="cell ver-count${colHi}" title="${esc(tip)}">${inner}</td>`;
+      }).join("");
+      return `<tr class="${rowHi.trim()}"><td class="service-name pmv-row-head" data-pmv-row="${encRk}" title="${esc(label)}">${esc(label)}</td>${cells}</tr>`;
+    });
+
+    wrap.innerHTML = `<table class="matrix pmv-matrix"><thead>${thead}</thead><tbody>${rows.join("")}</tbody></table>`;
+  }
+
+  async function load() {
+    lastLoadError = null;
+    wrap.innerHTML = '<p style="padding:1rem;color:var(--muted);">Loading…</p>';
+    try {
+      const [data, custPayload, dash] = await Promise.all([
+        apiWithTimeout(apiPath, PROM_VERSION_MATRIX_FETCH_MS),
+        api("/api/customers").catch(() => []),
+        api("/api/dashboard").catch(() => ({})),
+      ]);
+      custRows = Array.isArray(custPayload) ? custPayload : [];
+      const coreKey = dash.core_service_key || "clingine";
+      const coreEl = document.getElementById(`${prefix}-core-key`);
+      if (coreEl) coreEl.textContent = coreKey;
+      lastPoints = Array.isArray(data.points) ? data.points : [];
+      highlightRowKey = null;
+      highlightColCustomer = null;
+      paint();
+    } catch (e) {
+      lastPoints = [];
+      highlightRowKey = null;
+      highlightColCustomer = null;
+      const msg = e && e.name === "AbortError" ? "Request timed out (32s)." : String(e);
+      lastLoadError = msg;
+      wrap.innerHTML = `<p class="error-banner" style="margin:0.75rem;">${esc(msg)}</p>`;
+    }
+  }
+
+  wrap.addEventListener("click", (ev) => {
+    if (lastLoadError) return;
+    const colTh = ev.target.closest("th.pmv-col-head[data-pmv-col]");
+    const rowTd = ev.target.closest("td.pmv-row-head[data-pmv-row]");
+    if (rowTd) {
+      let rk;
+      try {
+        rk = decodeURIComponent(rowTd.getAttribute("data-pmv-row") || "");
+      } catch {
+        rk = rowTd.getAttribute("data-pmv-row") || "";
+      }
+      highlightRowKey = highlightRowKey === rk ? null : rk;
+      highlightColCustomer = null;
+      paint();
+      return;
+    }
+    if (colTh) {
+      let cust;
+      try {
+        cust = decodeURIComponent(colTh.getAttribute("data-pmv-col") || "");
+      } catch {
+        cust = colTh.getAttribute("data-pmv-col") || "";
+      }
+      highlightColCustomer = highlightColCustomer === cust ? null : cust;
+      highlightRowKey = null;
+      paint();
+    }
+  });
+
+  rowQEl.addEventListener("input", paint);
+  custQEl.addEventListener("input", paint);
+  rowModeEl.addEventListener("change", paint);
+  custModeEl.addEventListener("change", paint);
+  document.querySelectorAll(`input[name="${prefix}-cloud"]`).forEach((r) => r.addEventListener("change", paint));
+  if (!isGb) {
+    document.querySelectorAll(`input[name="${prefix}-core"]`).forEach((r) => r.addEventListener("change", paint));
+  }
+  btn.addEventListener("click", () => void load());
+  await load();
+}
+
+async function renderGbVersions() {
+  await renderPrometheusMatrixPage("gb");
+}
+
+async function renderK8sVersions() {
+  await renderPrometheusMatrixPage("k8s");
+}
+
 // ──────────────────────────────────────────────────────────── About page ──────
 
 async function renderAbout() {
@@ -1635,6 +1985,9 @@ async function renderAbout() {
 
       <h3>Changelog</h3>
       <ul class="about-changelog">
+        <li><strong>2.0.5</strong> — <strong>GB_Versions</strong>: core customers only (no All/others radios); both version matrices: click row or column header to highlight (toggle); K8S keeps segment radios</li>
+        <li><strong>2.0.4</strong> — <strong>GB_Versions</strong> / <strong>K8S_Versions</strong> pages: same Services-style filters (cloud, core/others, contains / not contains); K8S matrix uses cluster · version · region rows and only customers returned by the query</li>
+        <li><strong>2.0.3</strong> — <strong>Versions</strong> page (nav before About): Prometheus matrix of <code>glassboxVersion</code> × Customer with node counts; 30s server timeout on the query + 32s client fetch abort; optional <code>CVA_PROMETHEUS_URL</code></li>
         <li><strong>2.0.2</strong> — Service Dive legend back <strong>above</strong> the matrix; YAML diff panels wider (override default <code>.panel</code> cap) + <strong>resizable</strong> diff area (drag lower-right corner)</li>
         <li><strong>2.0.1</strong> — <strong>Service Dive AI</strong> (Gemini) on the 2.0 line; <strong>only-Diff</strong> shows changed lines only (no identical context); Customers/Services: cloud + segment filters, service key contains/not contains; <strong>Compare 2 customers</strong> (full merged YAML diff); UI labels <strong>others</strong>, <strong>Diff 2 customers</strong>, combobox service picker</li>
         <li><strong>1.0.19</strong> — YAML diff panel: <strong>only-Diff</strong> vs <strong>all</strong> (full YAML with diff colors)</li>
@@ -1717,6 +2070,9 @@ function route() {
   else if (a === "customers") renderCustomers();
   else if (a === "services") renderServices();
   else if (a === "anomaly") renderAnomaly();
+  else if (a === "versions") void renderGbVersions();
+  else if (a === "gb-versions") void renderGbVersions();
+  else if (a === "k8s-versions") void renderK8sVersions();
   else if (a === "about") renderAbout();
   else if (a === "dive") renderServiceDive(rest[0] ? decodeURIComponent(rest.join("/")) : "");
   else if (a === "customer" && rest[0]) renderCustomer(decodeURIComponent(rest.join("/")));

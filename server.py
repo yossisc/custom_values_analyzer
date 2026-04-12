@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "2.0.2"
+VERSION = "2.0.5"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
@@ -56,6 +56,10 @@ from backend.config import (  # noqa: E402
 )
 from backend.db import connect, list_customers  # noqa: E402
 from backend.gemini_nl import build_service_dive_nl_context, call_gemini_nl_filter  # noqa: E402
+from backend.prometheus_versions import (  # noqa: E402
+    fetch_k8s_version_points,
+    fetch_version_points,
+)
 from backend.scan import run_scan_to_db  # noqa: E402
 
 # Module-level server reference so /api/stop can shut it down
@@ -137,6 +141,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "Service Dive — Diff 2 customers (matrix columns); YamlDiff side-by-side service YAML (stdlib difflib)",
                     "Compare 2 customers — full merged values.yaml diff (side-by-side)",
                     "Anomaly — find customers or services with unusually few enabled/disabled entries",
+                    "GB_Versions — core customers only, glassboxVersion × Customer; K8S_Versions — cluster/k8s_version/region × Customer; row/column header click highlight; 30s query timeout",
                     "Key+Value filter — find customers by specific config key values",
                     "Cloud filter — AWS / Azure / Both toggle on matrix views",
                     "Core / others — filter by segment service (default: clingine) enabled on the customer",
@@ -332,6 +337,32 @@ class Handler(SimpleHTTPRequestHandler):
 
         if path == "/api/gemini/status":
             self._json(_gemini_status_payload())
+            return
+
+        if path == "/api/glassbox-versions":
+            points, err = fetch_version_points()
+            if err:
+                status = (
+                    HTTPStatus.GATEWAY_TIMEOUT
+                    if "timed out" in err.lower()
+                    else HTTPStatus.BAD_GATEWAY
+                )
+                self._json({"error": err}, status)
+                return
+            self._json({"points": points})
+            return
+
+        if path == "/api/k8s-versions":
+            points, err = fetch_k8s_version_points()
+            if err:
+                status = (
+                    HTTPStatus.GATEWAY_TIMEOUT
+                    if "timed out" in err.lower()
+                    else HTTPStatus.BAD_GATEWAY
+                )
+                self._json({"error": err}, status)
+                return
+            self._json({"points": points})
             return
 
         return SimpleHTTPRequestHandler.do_GET(self)
