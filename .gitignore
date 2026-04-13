@@ -1,18 +1,52 @@
-# Runtime data (generated locally)
+# ── Runtime data (generated locally, may contain secrets) ───────────────────
 data/
-.venv/
-venv/
+# data/ already covers: analyzer.db, server.pid, user_config.json,
+#   .gemini_api_key, .openai_api_key, .api_key
 
-# Python
+# ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .Python
+*.egg-info/
+dist/
+build/
 
-# IDE
+# ── Virtual envs ────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Environment / secrets files (never commit) ──────────────────────────────
+.env
+.env.*
+*.env
+.envrc
+
+# ── API / secret key files ───────────────────────────────────────────────────
+*.key
+*.pem
+*.p12
+*.pfx
+*_api_key*
+*_secret*
+*credentials*
+secrets.json
+secrets.yaml
+secrets.yml
+
+# ── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
+
+# ── Test / coverage ──────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

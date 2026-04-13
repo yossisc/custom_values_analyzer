@@ -501,18 +501,42 @@ async function renderDashboard() {
 
   const byService = Object.fromEntries(matrix.map((r) => [r.service, r.by_customer]));
 
-  function syncCsvHref() {
-    const seg = getSegmentMode("mx-core");
-    mxCsv.href = `/api/export/matrix.csv?segment=${encodeURIComponent(seg)}`;
-  }
+  // Updated by paint(); used by the CSV click handler
+  let csvFs = [], csvFc = [];
+
+  // Replace server CSV link with a client-side download of the current filtered view
+  mxCsv.removeAttribute("href");
+  mxCsv.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!csvFs.length || !csvFc.length) return;
+    const cloud = getCloud("mx-cloud");
+    const header = ["Service", ...csvFc.map((c) => displayCustomerName(c, cloud))];
+    const dataRows = csvFs.map((svc) => {
+      const bc = byService[svc] || {};
+      return [svc, ...csvFc.map((c) => {
+        const cell = bc[c] || {};
+        return cell.enabled === true ? "green" : "red";
+      })];
+    });
+    const csvText = [header, ...dataRows]
+      .map((row) => row.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const blob = new Blob([csvText], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "matrix_filtered.csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
 
   function paint() {
     const cloud = getCloud("mx-cloud");
     const seg   = getSegmentMode("mx-core");
     const svcQ  = fSvc.value;
     const custQ = fCust.value;
-
-    syncCsvHref();
 
     // Cloud → segment → text filters (segment uses precomputed scan flags; fast on the client)
     const cloudCustomers = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
@@ -536,6 +560,9 @@ async function renderDashboard() {
     const { services: fs, customers: fc } = applyAxisColorFilter(
       fsBase, fcBase, byService, showColor ? fColor.value : ""
     );
+
+    csvFs = fs;
+    csvFc = fc;
 
     const tipById = new Map();
     let tipSeq = 0;
@@ -785,7 +812,12 @@ async function renderService(name) {
         </span>
         <span id="svc-count" style="font-size:0.82rem;color:var(--muted);"></span>
       </div>
-      <p style="font-size:0.85rem;color:var(--muted);">Per-customer merged subtree for this service. Read-only YAML. Click a customer name to view their full config.</p>
+      <p style="font-size:0.85rem;color:var(--muted);">Per-customer merged subtree for this service. Click the triangle to expand / collapse YAML. Click a customer name to view full config.</p>
+      <div class="svc-expand-bar">
+        <button type="button" class="svc-expand-link" id="svc-expand-all">Expand all</button>
+        <span class="svc-expand-sep">·</span>
+        <button type="button" class="svc-expand-link" id="svc-collapse-all">Collapse all</button>
+      </div>
       <div id="svc-entries"></div>
     </div>
   `;
@@ -805,38 +837,49 @@ async function renderService(name) {
     container.innerHTML = "";
 
     for (const [cust, info] of filtered) {
-      const section = document.createElement("div");
-      section.className = "svc-customer-block";
+      const details = document.createElement("details");
+      details.className = "svc-customer-details";
 
-      const h3 = document.createElement("h3");
-      h3.className = "svc-cust-head";
+      const summary = document.createElement("summary");
+      summary.className = "svc-cust-head";
+
+      const badge = document.createElement("span");
+      badge.className = "svc-enabled-badge";
+      badge.textContent = info.enabled ? "●" : "○";
+      badge.style.color = info.enabled ? "var(--on)" : "var(--off)";
+      badge.title = info.enabled ? "enabled: true" : "not enabled: true";
+      summary.appendChild(badge);
+
       const link = document.createElement("a");
       link.href = `#/customer/${encodeURIComponent(cust)}`;
       link.setAttribute("data-route", "");
       link.textContent = cust;
       link.className = "svc-cust-link";
-      h3.appendChild(link);
-      section.appendChild(h3);
+      // Stop click on link from toggling the <details>
+      link.addEventListener("click", (e) => e.stopPropagation());
+      summary.appendChild(link);
 
-      const badge = document.createElement("p");
-      badge.className = "files";
-      badge.textContent = info.enabled ? "● enabled: true (green)" : "○ not enabled: true (red)";
-      badge.style.color = info.enabled ? "var(--on)" : "var(--off)";
-      section.appendChild(badge);
+      details.appendChild(summary);
 
       const pre  = document.createElement("pre");
-      pre.className = "yaml-view";
+      pre.className = "yaml-view svc-yaml-body";
       const code = document.createElement("code");
       code.className = "language-yaml";
       code.textContent = info.yaml || "# (empty)";
       highlightYamlCode(code);
       pre.appendChild(code);
-      section.appendChild(pre);
+      details.appendChild(pre);
 
-      container.appendChild(section);
+      container.appendChild(details);
     }
   }
 
+  document.getElementById("svc-expand-all")?.addEventListener("click", () => {
+    container.querySelectorAll("details.svc-customer-details").forEach((d) => { d.open = true; });
+  });
+  document.getElementById("svc-collapse-all")?.addEventListener("click", () => {
+    container.querySelectorAll("details.svc-customer-details").forEach((d) => { d.open = false; });
+  });
   document.querySelectorAll('input[name="svc-color"]').forEach((r) =>
     r.addEventListener("change", paint)
   );
@@ -878,6 +921,18 @@ function filterCustomersByKV(data, fc, kvKey, kvValue, kvRelation = "contains") 
 }
 
 /**
+ * Apply a list of KV filters in AND order.
+ * Each filter: { key, value, relation }
+ */
+function filterCustomersByKVList(data, fc, kvFilters) {
+  let result = fc;
+  for (const f of (kvFilters || [])) {
+    result = filterCustomersByKV(data, result, f.key || "", f.value || "", f.relation || "contains");
+  }
+  return result;
+}
+
+/**
  * Client-side modal recomputation for the visible subset of customers.
  * Returns { modal_val, modal_pct } based on `display` values of fc.
  */
@@ -893,27 +948,29 @@ function recomputeModal(rowData, fc) {
   return { modal_val, modal_pct: parseFloat(((modal_count / fc.length) * 100).toFixed(1)) };
 }
 
-/** Repopulate Service Dive customer comboboxes (datalist); keep valid values; avoid A === B when possible. */
+/** Repopulate Service Dive customer <select> elements; keep current selections when valid. */
 function syncDiveDiffInputs(pool, cloud) {
-  const aIn = document.getElementById("dive-diff-a");
-  const bIn = document.getElementById("dive-diff-b");
-  const dlA = document.getElementById("dive-diff-a-dl");
-  const dlB = document.getElementById("dive-diff-b-dl");
-  if (!aIn || !bIn) return;
+  const aSel = document.getElementById("dive-diff-a");
+  const bSel = document.getElementById("dive-diff-b");
+  if (!aSel || !bSel) return;
   void cloud;
-  const va = aIn.value.trim();
-  const vb = bIn.value.trim();
-  const opt = (c) => `<option value="${esc(c)}">${esc(displayCustomerName(c, cloud))}</option>`;
-  const body = pool.map(opt).join("");
-  if (dlA) dlA.innerHTML = body;
-  if (dlB) dlB.innerHTML = body;
-  if (pool.includes(va)) aIn.value = va;
-  else aIn.value = pool[0] || "";
-  if (pool.includes(vb)) bIn.value = vb;
-  else bIn.value = pool.length >= 2 ? pool[1] : pool[0] || "";
-  if (aIn.value && aIn.value === bIn.value && pool.length >= 2) {
-    const other = pool.find((c) => c !== aIn.value);
-    if (other) bIn.value = other;
+
+  // Save selections before rebuilding options (setting innerHTML resets .value)
+  const prevA = aSel.value;
+  const prevB = bSel.value;
+
+  const optHtml = pool.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  aSel.innerHTML = optHtml;
+  bSel.innerHTML = optHtml;
+
+  // Restore previous selection if still in pool; otherwise fall back to sensible defaults
+  aSel.value = pool.includes(prevA) ? prevA : (pool[0] || "");
+  bSel.value = pool.includes(prevB) ? prevB : (pool.length >= 2 ? pool[1] : pool[0] || "");
+
+  // Ensure A ≠ B
+  if (aSel.value && aSel.value === bSel.value && pool.length >= 2) {
+    const other = pool.find((c) => c !== aSel.value);
+    if (other) bSel.value = other;
   }
 }
 
@@ -1052,6 +1109,39 @@ async function renderServiceDive(preselect = "") {
   const diveCoreTitle = `Core = ${coreKey} enabled: true; others = not.`;
   let diveData = null;
 
+  /** State: array of { key, value, relation } – persists across service switches */
+  let kvFilters = [{ key: "", value: "", relation: "contains" }];
+
+  function renderKvRows() {
+    const wrap = document.getElementById("dive-kv-filters-wrap");
+    if (!wrap) return;
+    wrap.innerHTML = kvFilters.map((f, i) => `
+      <div class="kv-filter-row">
+        <input type="search" class="kv-input kv-key-in" value="${esc(f.key)}" placeholder="key…" autocomplete="off" />
+        <select class="kv-relation-select kv-rel-in" aria-label="Value relation">
+          <option value="contains"${f.relation === "contains" ? " selected" : ""}>contains</option>
+          <option value="not_contains"${f.relation === "not_contains" ? " selected" : ""}>not contains</option>
+        </select>
+        <input type="search" class="kv-input kv-val kv-val-in" value="${esc(f.value)}" placeholder="value…" autocomplete="off" />
+        ${kvFilters.length > 1
+          ? `<button type="button" class="btn kv-btn kv-remove-btn" data-kv-idx="${i}" title="Remove this filter">×</button>`
+          : ""}
+        ${i === kvFilters.length - 1
+          ? `<button type="button" class="btn kv-btn kv-add-btn" title="Add another filter (AND)">+</button>`
+          : `<span class="kv-and-label">AND</span>`}
+      </div>
+    `).join("");
+  }
+
+  function collectKvFilters() {
+    const rows = document.querySelectorAll("#dive-kv-filters-wrap .kv-filter-row");
+    kvFilters = Array.from(rows).map((row) => ({
+      key:      row.querySelector(".kv-key-in")?.value  || "",
+      relation: row.querySelector(".kv-rel-in")?.value  || "contains",
+      value:    row.querySelector(".kv-val-in")?.value  || "",
+    }));
+  }
+
   app.innerHTML = `
     <div style="max-width:100%;">
       <div class="panel dive-header-panel">
@@ -1125,15 +1215,7 @@ async function renderServiceDive(preselect = "") {
         </div>
         <div class="kv-row dive-manual-only hidden" id="dive-kv-row">
           <span class="kv-label">Filter key+value</span>
-          <input type="search" id="dive-kvkey" placeholder="key…" autocomplete="off" class="kv-input" />
-          <label class="kv-relation-label">
-            <span class="sr-only">Value relation</span>
-            <select id="dive-kv-relation" class="kv-relation-select" aria-label="Value matches">
-              <option value="contains">contains</option>
-              <option value="not_contains">not contains</option>
-            </select>
-          </label>
-          <input type="search" id="dive-kvval" placeholder="value…" autocomplete="off" class="kv-input kv-val" />
+          <div id="dive-kv-filters-wrap" class="kv-filters-list"></div>
         </div>
         <div class="dive-diff-row dive-manual-only hidden" id="dive-diff-row">
           <label class="dive-diff-check">
@@ -1141,12 +1223,10 @@ async function renderServiceDive(preselect = "") {
           </label>
           <span id="dive-diff-picks" class="dive-diff-picks hidden">
             <label>Customer A
-              <input type="text" id="dive-diff-a" class="dive-diff-combo" list="dive-diff-a-dl" placeholder="customer…" autocomplete="off" spellcheck="false" />
-              <datalist id="dive-diff-a-dl"></datalist>
+              <select id="dive-diff-a" class="dive-diff-combo" autocomplete="off"></select>
             </label>
             <label>Customer B
-              <input type="text" id="dive-diff-b" class="dive-diff-combo" list="dive-diff-b-dl" placeholder="customer…" autocomplete="off" spellcheck="false" />
-              <datalist id="dive-diff-b-dl"></datalist>
+              <select id="dive-diff-b" class="dive-diff-combo" autocomplete="off"></select>
             </label>
             <button type="button" class="btn" id="dive-yaml-diff-btn">YamlDiff</button>
           </span>
@@ -1197,12 +1277,6 @@ async function renderServiceDive(preselect = "") {
     const segment = getSegmentMode("dive-core");
     const keyQ    = document.getElementById("dive-fkey")?.value   || "";
     const custQ   = document.getElementById("dive-fcust")?.value  || "";
-    const kvKey   = document.getElementById("dive-kvkey")?.value  || "";
-    const kvValue = document.getElementById("dive-kvval")?.value  || "";
-    const kvRel =
-      document.getElementById("dive-kv-relation")?.value === "not_contains"
-        ? "not_contains"
-        : "contains";
     const diffMode = document.getElementById("dive-diff-mode")?.checked;
 
     let pool = diveData.customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
@@ -1219,9 +1293,7 @@ async function renderServiceDive(preselect = "") {
         segment,
         keyQ,
         custQ: diffMode ? "" : custQ,
-        kvKey,
-        kvValue,
-        kvRelation: kvRel,
+        kvFilters,
         diffMode,
         diffCustomerA: diffA,
         diffCustomerB: diffB,
@@ -1269,6 +1341,9 @@ async function renderServiceDive(preselect = "") {
         <div id="dive-matrix-mount"></div>
         <div id="dive-yaml-diff-panel" class="yaml-diff-panel hidden" aria-live="polite"></div>
       `;
+      // Reset KV filters to a single empty row for each new service load
+      kvFilters = [{ key: "", value: "", relation: "contains" }];
+      renderKvRows();
       subfilters.classList.remove("hidden");
       kvRow.classList.remove("hidden");
       document.getElementById("dive-seg-hint")?.classList.remove("hidden");
@@ -1292,10 +1367,40 @@ async function renderServiceDive(preselect = "") {
       }
       if (!subfiltersWired) {
         subfiltersWired = true;
-        ["dive-fkey", "dive-fcust", "dive-kvkey", "dive-kvval"].forEach((id) =>
-          document.getElementById(id).addEventListener("input", paintDive)
+        ["dive-fkey", "dive-fcust"].forEach((id) =>
+          document.getElementById(id)?.addEventListener("input", paintDive)
         );
-        document.getElementById("dive-kv-relation")?.addEventListener("change", paintDive);
+        // KV filter rows are dynamic — use event delegation on their container
+        const kvWrap = document.getElementById("dive-kv-filters-wrap");
+        if (kvWrap) {
+          kvWrap.addEventListener("input", (e) => {
+            if (e.target.matches(".kv-key-in, .kv-val-in")) {
+              collectKvFilters();
+              paintDive();
+            }
+          });
+          kvWrap.addEventListener("change", (e) => {
+            if (e.target.matches(".kv-rel-in")) {
+              collectKvFilters();
+              paintDive();
+            }
+          });
+          kvWrap.addEventListener("click", (e) => {
+            if (e.target.matches(".kv-add-btn")) {
+              collectKvFilters();
+              kvFilters.push({ key: "", value: "", relation: "contains" });
+              renderKvRows();
+              kvWrap.querySelectorAll(".kv-filter-row .kv-key-in")[kvFilters.length - 1]?.focus();
+            } else if (e.target.matches(".kv-remove-btn")) {
+              collectKvFilters();
+              const idx = parseInt(e.target.getAttribute("data-kv-idx"), 10);
+              if (!isNaN(idx)) kvFilters.splice(idx, 1);
+              if (!kvFilters.length) kvFilters = [{ key: "", value: "", relation: "contains" }];
+              renderKvRows();
+              paintDive();
+            }
+          });
+        }
         document.querySelectorAll('input[name="dive-cloud"]').forEach((r) =>
           r.addEventListener("change", paintDive)
         );
@@ -1315,8 +1420,6 @@ async function renderServiceDive(preselect = "") {
         });
         document.getElementById("dive-diff-a")?.addEventListener("change", paintDive);
         document.getElementById("dive-diff-b")?.addEventListener("change", paintDive);
-        document.getElementById("dive-diff-a")?.addEventListener("input", paintDive);
-        document.getElementById("dive-diff-b")?.addEventListener("input", paintDive);
         document.getElementById("dive-yaml-diff-btn")?.addEventListener("click", () => {
           runServiceDiveYamlDiff();
         });
@@ -1348,12 +1451,11 @@ async function renderServiceDive(preselect = "") {
             const f = res.filter || {};
             const fk = document.getElementById("dive-fkey");
             const fc = document.getElementById("dive-fcust");
-            const kk = document.getElementById("dive-kvkey");
-            const kv = document.getElementById("dive-kvval");
             if (fk) fk.value = f.keyQ || "";
             if (fc) fc.value = f.custQ || "";
-            if (kk) kk.value = f.kvKey || "";
-            if (kv) kv.value = f.kvValue || "";
+            // AI sets first KV filter row
+            kvFilters = [{ key: f.kvKey || "", value: f.kvValue || "", relation: "contains" }];
+            renderKvRows();
             setRadioByValue("dive-cloud", f.cloud || "both");
             setRadioByValue("dive-core", f.segment || "all");
             if (expl) {
@@ -1428,9 +1530,7 @@ function renderDiveTable(
     segment = "all",
     keyQ = "",
     custQ = "",
-    kvKey = "",
-    kvValue = "",
-    kvRelation = "contains",
+    kvFilters = [],
     diffMode = false,
     diffCustomerA = "",
     diffCustomerB = "",
@@ -1458,7 +1558,7 @@ function renderDiveTable(
       return;
     }
     fc = [a, b];
-    fc = filterCustomersByKV(data, fc, kvKey, kvValue, kvRelation);
+    fc = filterCustomersByKVList(data, fc, kvFilters);
     if (fc.length < 2) {
       container.innerHTML =
         '<div class="panel dive-matrix-placeholder"><p style="color:var(--muted);">Key+value filter removed one of the two customers; clear or relax it.</p></div>';
@@ -1468,7 +1568,7 @@ function renderDiveTable(
     fc = customers.filter((c) => cloud === "both" || cloudOf(c) === cloud);
     fc = filterCustomersBySegment(fc, customerCore, segment);
     fc = fc.filter((c) => !custQ.trim() || c.toLowerCase().includes(custQ.toLowerCase()));
-    fc = filterCustomersByKV(data, fc, kvKey, kvValue, kvRelation);
+    fc = filterCustomersByKVList(data, fc, kvFilters);
   }
 
   const fs = matrix.filter((row) => !keyQ.trim() || row.key.toLowerCase().includes(keyQ.toLowerCase()));
@@ -1517,13 +1617,18 @@ function renderDiveTable(
   });
 
   let kvFoot = "";
-  if (kvKey.trim() || kvValue.trim()) {
-    if (kvValue.trim()) {
-      const rel = kvRelation === "not_contains" ? "not contains" : "contains";
-      kvFoot = `&nbsp;·&nbsp; key+val: <em>${esc(kvKey || "*")} ${rel} "${esc(kvValue.trim())}"</em>`;
-    } else {
-      kvFoot = `&nbsp;·&nbsp; key: <em>${esc(kvKey.trim())}</em>`;
-    }
+  const activeKvFilters = (kvFilters || []).filter((f) => (f.key || "").trim() || (f.value || "").trim());
+  if (activeKvFilters.length) {
+    const parts = activeKvFilters.map((f) => {
+      const k = (f.key || "").trim();
+      const v = (f.value || "").trim();
+      if (v) {
+        const rel = f.relation === "not_contains" ? "not contains" : "contains";
+        return `key+val: <em>${esc(k || "*")} ${rel} "${esc(v)}"</em>`;
+      }
+      return `key: <em>${esc(k)}</em>`;
+    });
+    kvFoot = `&nbsp;·&nbsp; ${parts.join(" AND ")}`;
   }
 
   container.innerHTML = `
@@ -1985,6 +2090,7 @@ async function renderAbout() {
 
       <h3>Changelog</h3>
       <ul class="about-changelog">
+        <li><strong>2.0.6</strong> — Matrix CSV now downloads the <em>current filtered view</em> (client-side, respects cloud/segment/text); service detail nav stays active on sub-pages; service detail: expand/collapse ▶/▼ per customer + Expand all / Collapse all; Service Dive diff datalist fix (no duplicate entries); multi-KV filter rows with <strong>+</strong> / <strong>×</strong> and AND logic; .gitignore security hardening</li>
         <li><strong>2.0.5</strong> — <strong>GB_Versions</strong>: core customers only (no All/others radios); both version matrices: click row or column header to highlight (toggle); K8S keeps segment radios</li>
         <li><strong>2.0.4</strong> — <strong>GB_Versions</strong> / <strong>K8S_Versions</strong> pages: same Services-style filters (cloud, core/others, contains / not contains); K8S matrix uses cluster · version · region rows and only customers returned by the query</li>
         <li><strong>2.0.3</strong> — <strong>Versions</strong> page (nav before About): Prometheus matrix of <code>glassboxVersion</code> × Customer with node counts; 30s server timeout on the query + 32s client fetch abort; optional <code>CVA_PROMETHEUS_URL</code></li>
@@ -2038,8 +2144,10 @@ function setActiveNav() {
     let active = false;
     if (!first) {
       active = href === "#/" || href === "#";
-    } else if (first === "compare-customers") {
+    } else if (first === "compare-customers" || first === "customer") {
       active = seg === "customers";
+    } else if (first === "service") {
+      active = seg === "services";
     } else {
       active = seg === first;
     }

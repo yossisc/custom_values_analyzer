@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "2.0.5"
+VERSION = "2.0.6"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
