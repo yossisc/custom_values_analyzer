@@ -76,6 +76,28 @@ code {
   max-width: 100%;
 }
 
+/* Prominent in-page loading (Matrix, Anomaly, GB/K8S versions, Heatmap) */
+.ui-loading {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.03em;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.ui-loading--pad {
+  padding: 1.25rem 1rem;
+}
+
+.matrix-loading-shell {
+  min-height: 14rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+}
+
 .footer {
   padding: 0.75rem 1.5rem;
   border-top: 1px solid var(--border);
@@ -1575,6 +1597,13 @@ code {
   font-size: 0.88rem;
   margin-bottom: 0.5rem;
   color: var(--muted);
+}
+
+.heatmap-status.ui-loading {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.03em;
 }
 
 .heatmap-mount {

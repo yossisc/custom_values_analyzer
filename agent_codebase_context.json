@@ -15,7 +15,7 @@
   },
   "repo": {
     "app_name": "Custom Values Analyzer",
-    "app_version": "2.0.8",
+    "app_version": "2.0.9",
     "one_liner": "Local-only web app: read-only scan of per-customer Helm custom_values YAML trees, deep-merged with a base chart values.yaml, persisted in SQLite, browsed via vanilla HTML/JS/CSS with optional Gemini NL filters and optional Prometheus-backed version matrices.",
     "runtime": {
       "language": "Python 3.10+",

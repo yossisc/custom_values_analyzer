@@ -447,6 +447,8 @@ function applyAxisColorFilter(fsBase, fcBase, byService, mode) {
 }
 
 async function renderDashboard() {
+  app.innerHTML = `<div class="panel matrix-loading-shell"><p class="ui-loading ui-loading--pad">Loading…</p></div>`;
+
   let data;
   try {
     data = await api("/api/dashboard");
@@ -1696,7 +1698,7 @@ async function renderAnomaly() {
         </label>
         <button type="button" class="btn btn-primary" id="an-run">Find</button>
       </div>
-      <div id="an-results"></div>
+      <div id="an-results"><p class="ui-loading ui-loading--pad">Loading…</p></div>
     </div>
   `;
 
@@ -1710,7 +1712,7 @@ async function renderAnomaly() {
     const segment   = getSegmentMode("an-core");
 
     btn.disabled = true;
-    results.innerHTML = '<p style="color:var(--muted);">Loading…</p>';
+    results.innerHTML = '<p class="ui-loading ui-loading--pad">Loading…</p>';
 
     try {
       const data = await api(
@@ -1834,7 +1836,7 @@ async function renderPrometheusMatrixPage(kind) {
     </div>
     <p class="matrix-toolbar-hint"><span class="muted-label">Timeout</span> — server stops waiting on Prometheus after 30s; this page cancels the fetch after 32s.</p>
     <p class="matrix-toolbar-hint" style="margin-top:0;"><span class="muted-label">Tip</span> — click a <strong>version</strong> (row) or <strong>customer</strong> (column) header to highlight; click again to clear.</p>
-    <div class="matrix-wrap" id="${prefix}-wrap"></div>
+    <div class="matrix-wrap" id="${prefix}-wrap"><p class="ui-loading ui-loading--pad">Loading…</p></div>
   `;
 
   const wrap = document.getElementById(`${prefix}-wrap`);
@@ -1983,7 +1985,7 @@ async function renderPrometheusMatrixPage(kind) {
 
   async function load() {
     lastLoadError = null;
-    wrap.innerHTML = '<p style="padding:1rem;color:var(--muted);">Loading…</p>';
+    wrap.innerHTML = '<p class="ui-loading ui-loading--pad">Loading…</p>';
     try {
       const [data, custPayload, dash] = await Promise.all([
         apiWithTimeout(apiPath, PROM_VERSION_MATRIX_FETCH_MS),
@@ -2090,6 +2092,7 @@ async function renderAbout() {
 
       <h3>Changelog</h3>
       <ul class="about-changelog">
+        <li><strong>2.0.9</strong> — Matrix opens immediately with bold <strong>Loading…</strong> then fills; same prominent <code>.ui-loading</code> style on Anomaly / GB &amp; K8S versions / Heatmap fetches</li>
         <li><strong>2.0.8</strong> — <strong>Heatmap</strong>: legend color swatches (CSS); click orange/red tile → lazy <code>GET /api/heatmap/bad-pods</code> table (per-pod rows); green tile closes detail panel</li>
         <li><strong>2.0.7</strong> — <strong>Heatmap</strong> page: Prometheus treemap (D3 from jsDelivr) — tile size = node count per <code>Customer</code>, color from bad-pod count (0 green, 1–2 orange, 3+ red); <code>GET /api/heatmap</code>; two PromQL queries in parallel on server</li>
         <li><strong>2.0.6</strong> — Matrix CSV now downloads the <em>current filtered view</em> (client-side, respects cloud/segment/text); service detail nav stays active on sub-pages; service detail: expand/collapse ▶/▼ per customer + Expand all / Collapse all; Service Dive diff datalist fix (no duplicate entries); multi-KV filter rows with <strong>+</strong> / <strong>×</strong> and AND logic; .gitignore security hardening</li>
@@ -2144,7 +2147,7 @@ async function showHeatmapBadPodsDetail(customer) {
   const p = document.getElementById("hm-detail-panel");
   if (!p) return;
   p.classList.remove("hidden");
-  p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="heatmap-detail-status">Loading…</p>`;
+  p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="ui-loading ui-loading--pad">Loading…</p>`;
   try {
     const data = await apiWithTimeout(
       `/api/heatmap/bad-pods?customer=${encodeURIComponent(customer)}`,
@@ -2302,7 +2305,7 @@ async function renderHeatmap() {
       </div>
       <p class="matrix-toolbar-hint">Two PromQL queries run in parallel on the server (30s cap each). This page aborts the HTTP request after ${HEATMAP_FETCH_MS / 1000}s.</p>
       <p class="heatmap-d3-hint" id="hm-d3-note">Tiles are drawn with <a href="https://d3js.org/" target="_blank" rel="noopener noreferrer">D3</a> loaded from jsDelivr when you open this page.</p>
-      <div id="hm-status" class="heatmap-status">Loading…</div>
+      <div id="hm-status" class="heatmap-status ui-loading">Loading…</div>
       <div id="hm-mount" class="heatmap-mount" aria-label="Customer treemap"></div>
       <div id="hm-detail-panel" class="heatmap-detail-panel hidden" aria-live="polite"></div>
     </div>
@@ -2315,23 +2318,26 @@ async function renderHeatmap() {
     clearHeatmapDetailPanel();
     statusEl.textContent = "Loading…";
     statusEl.classList.remove("error-banner");
+    statusEl.classList.add("ui-loading");
     document.getElementById("hm-mount").innerHTML = "";
     try {
       const data = await apiWithTimeout("/api/heatmap", HEATMAP_FETCH_MS);
       if (data.error) {
         statusEl.textContent = String(data.error);
+        statusEl.classList.remove("ui-loading");
         statusEl.classList.add("error-banner");
         allCells = [];
         return;
       }
       allCells = Array.isArray(data.customers) ? data.customers : [];
       statusEl.textContent = `${allCells.length} customers from Prometheus`;
-      statusEl.classList.remove("error-banner");
+      statusEl.classList.remove("ui-loading", "error-banner");
       paint();
     } catch (e) {
       allCells = [];
       const msg = e && e.name === "AbortError" ? `Request timed out (${HEATMAP_FETCH_MS / 1000}s).` : String(e.message || e);
       statusEl.textContent = msg;
+      statusEl.classList.remove("ui-loading");
       statusEl.classList.add("error-banner");
     }
   }
