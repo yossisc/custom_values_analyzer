@@ -2090,6 +2090,8 @@ async function renderAbout() {
 
       <h3>Changelog</h3>
       <ul class="about-changelog">
+        <li><strong>2.0.8</strong> — <strong>Heatmap</strong>: legend color swatches (CSS); click orange/red tile → lazy <code>GET /api/heatmap/bad-pods</code> table (per-pod rows); green tile closes detail panel</li>
+        <li><strong>2.0.7</strong> — <strong>Heatmap</strong> page: Prometheus treemap (D3 from jsDelivr) — tile size = node count per <code>Customer</code>, color from bad-pod count (0 green, 1–2 orange, 3+ red); <code>GET /api/heatmap</code>; two PromQL queries in parallel on server</li>
         <li><strong>2.0.6</strong> — Matrix CSV now downloads the <em>current filtered view</em> (client-side, respects cloud/segment/text); service detail nav stays active on sub-pages; service detail: expand/collapse ▶/▼ per customer + Expand all / Collapse all; Service Dive diff datalist fix (no duplicate entries); multi-KV filter rows with <strong>+</strong> / <strong>×</strong> and AND logic; .gitignore security hardening</li>
         <li><strong>2.0.5</strong> — <strong>GB_Versions</strong>: core customers only (no All/others radios); both version matrices: click row or column header to highlight (toggle); K8S keeps segment radios</li>
         <li><strong>2.0.4</strong> — <strong>GB_Versions</strong> / <strong>K8S_Versions</strong> pages: same Services-style filters (cloud, core/others, contains / not contains); K8S matrix uses cluster · version · region rows and only customers returned by the query</li>
@@ -2120,6 +2122,235 @@ async function renderAbout() {
   `;
 
   footerStatus.textContent = `v${info.version}`;
+}
+
+// ─────────────────────────────────────────────────────────────── Heatmap ──────
+
+const HEATMAP_D3_CDN = "https://cdn.jsdelivr.net/npm/d3@7.9.0/+esm";
+const HEATMAP_FETCH_MS = 35_000;
+const HEATMAP_BAD_PODS_FETCH_MS = 35_000;
+
+function clearHeatmapDetailPanel() {
+  const p = document.getElementById("hm-detail-panel");
+  if (!p) return;
+  p.innerHTML = "";
+  p.classList.add("hidden");
+}
+
+/**
+ * Load bad-pod instant-vector rows for one Customer (only after user click).
+ */
+async function showHeatmapBadPodsDetail(customer) {
+  const p = document.getElementById("hm-detail-panel");
+  if (!p) return;
+  p.classList.remove("hidden");
+  p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="heatmap-detail-status">Loading…</p>`;
+  try {
+    const data = await apiWithTimeout(
+      `/api/heatmap/bad-pods?customer=${encodeURIComponent(customer)}`,
+      HEATMAP_BAD_PODS_FETCH_MS,
+    );
+    if (data.error) {
+      p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="error-banner">${esc(String(data.error))}</p>`;
+      return;
+    }
+    const pods = Array.isArray(data.pods) ? data.pods : [];
+    if (!pods.length) {
+      p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="heatmap-detail-status">No matching series in this scrape window.</p>`;
+      return;
+    }
+    const cols = ["customer", "cluster", "region", "namespace", "pod", "container", "status", "reason"];
+    const thead = `<tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+    const tbody = pods
+      .map(
+        (r) =>
+          `<tr>${cols.map((k) => `<td>${esc(r[k] ?? "")}</td>`).join("")}</tr>`,
+      )
+      .join("");
+    p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="heatmap-detail-status">${pods.length} series</p><table class="heatmap-detail-table"><thead>${thead}</thead><tbody>${tbody}</tbody></table>`;
+  } catch (e) {
+    const msg = e && e.name === "AbortError" ? "Request timed out." : String(e.message || e);
+    p.innerHTML = `<h3 class="heatmap-detail-head">Bad pods — <code>${esc(customer)}</code></h3><p class="error-banner">${esc(msg)}</p>`;
+  }
+}
+
+/**
+ * Treemap from Prometheus: area ∝ node count; fill from status (GREEN/ORANGE/RED).
+ * D3 is loaded dynamically from jsDelivr when this page opens.
+ */
+async function drawHeatmapTreemap(cells) {
+  const mount = document.getElementById("hm-mount");
+  if (!mount) return;
+  mount.innerHTML = "";
+  if (!cells.length) {
+    mount.innerHTML = '<p class="heatmap-empty">No customers match the filter.</p>';
+    return;
+  }
+
+  let d3;
+  try {
+    d3 = await import(/* webpackIgnore: true */ HEATMAP_D3_CDN);
+  } catch (err) {
+    mount.innerHTML = `<p class="error-banner">Could not load D3 from CDN (${esc(String(err?.message || err))}). Heatmap needs network access to jsDelivr.</p>`;
+    return;
+  }
+
+  const w = Math.max(320, mount.clientWidth || 800);
+  const h = Math.max(420, Math.min(780, Math.floor(window.innerHeight * 0.62)));
+
+  const rootData = {
+    name: "root",
+    children: cells.map((c) => ({
+      name: c.customer,
+      value: Math.max(Number(c.node_count) || 0, 1),
+      node_count: Number(c.node_count) || 0,
+      error_pods: Number(c.error_pods) || 0,
+      status: c.status || "GREEN",
+    })),
+  };
+
+  const root = d3
+    .hierarchy(rootData)
+    .sum((d) => (d.children ? 0 : d.value))
+    .sort((a, b) => (b.value || 0) - (a.value || 0));
+
+  d3.treemap().tile(d3.treemapSquarify).size([w, h]).paddingOuter(2).paddingInner(2)(root);
+
+  const svg = d3.select(mount).append("svg").attr("class", "heatmap-svg").attr("viewBox", `0 0 ${w} ${h}`).attr("width", w).attr("height", h);
+
+  const leaf = svg
+    .selectAll("g")
+    .data(root.leaves())
+    .join("g")
+    .attr("class", "heatmap-cell")
+    .attr("transform", (d) => `translate(${d.x0},${d.y0})`);
+
+  const rect = leaf
+    .append("rect")
+    .attr("width", (d) => Math.max(0, d.x1 - d.x0))
+    .attr("height", (d) => Math.max(0, d.y1 - d.y0))
+    .attr("rx", 2)
+    .attr("ry", 2)
+    .attr("class", (d) => `heatmap-rect heatmap-fill-${String(d.data.status || "GREEN").toLowerCase()}`);
+
+  rect.append("title").text((d) => {
+    const dd = d.data;
+    const hint = (dd.error_pods || 0) > 0 ? "\nClick for bad-pod list" : "\nClick to close detail panel";
+    return `${dd.name}\nnodes: ${dd.node_count}\nbad pods: ${dd.error_pods}\nstatus: ${dd.status}${hint}`;
+  });
+
+  rect
+    .style("cursor", (d) => ((d.data.error_pods || 0) > 0 ? "pointer" : "default"))
+    .on("click", (event, d) => {
+      event.stopPropagation();
+      if ((d.data.error_pods || 0) > 0) {
+        void showHeatmapBadPodsDetail(d.data.name);
+      } else {
+        clearHeatmapDetailPanel();
+      }
+    });
+
+  leaf
+    .append("text")
+    .attr("class", "heatmap-label")
+    .attr("x", 4)
+    .attr("y", 14)
+    .text((d) => {
+      const dw = d.x1 - d.x0;
+      const dh = d.y1 - d.y0;
+      if (dw < 40 || dh < 20) return "";
+      const name = d.data.name;
+      const approx = Math.max(4, Math.floor(dw / 6.5));
+      return name.length > approx ? `${name.slice(0, approx - 1)}…` : name;
+    });
+
+  leaf
+    .filter((d) => d.y1 - d.y0 > 34)
+    .append("text")
+    .attr("class", "heatmap-sublabel")
+    .attr("x", 4)
+    .attr("y", 30)
+    .text((d) => {
+      const dw = d.x1 - d.x0;
+      if (dw < 48) return "";
+      const dd = d.data;
+      return `n=${dd.node_count} err=${dd.error_pods}`;
+    });
+}
+
+async function renderHeatmap() {
+  /** @type {{ customer: string, node_count: number, error_pods: number, status: string }[]} */
+  let allCells = [];
+
+  app.innerHTML = `
+    <div class="panel heatmap-intro">
+      <h2>Heatmap</h2>
+      <p class="heatmap-desc">
+        Live treemap from Prometheus (same endpoint as GB/K8S pages: <code>CVA_PROMETHEUS_URL</code>).
+        Each tile’s <strong>area</strong> is proportional to <strong>node count</strong> per <code>Customer</code> label.
+        <strong>Color</strong> uses kube signals: Pending, ErrImagePull / ImagePullBackOff / CrashLoopBackOff, or terminated Error — aggregated per customer.
+        Click an <strong>orange</strong> or <strong>red</strong> tile to load the bad-pod table below (Prometheus fetch on demand). Click a <strong>green</strong> tile to hide the table.
+      </p>
+      <div class="heatmap-legend" role="list">
+        <span class="heatmap-legend-item" role="listitem"><span class="heatmap-swatch heatmap-swatch-green" aria-hidden="true"></span> good</span>
+        <span class="heatmap-legend-item" role="listitem"><span class="heatmap-swatch heatmap-swatch-orange" aria-hidden="true"></span> 1–2 minor</span>
+        <span class="heatmap-legend-item" role="listitem"><span class="heatmap-swatch heatmap-swatch-red" aria-hidden="true"></span> 3+ severe</span>
+      </div>
+      <div class="heatmap-toolbar filters-matrix-toolbar">
+        <label>Filter customers <input type="search" id="hm-filter" placeholder="substring…" autocomplete="off" /></label>
+        <button type="button" class="btn" id="hm-refresh">Refresh</button>
+      </div>
+      <p class="matrix-toolbar-hint">Two PromQL queries run in parallel on the server (30s cap each). This page aborts the HTTP request after ${HEATMAP_FETCH_MS / 1000}s.</p>
+      <p class="heatmap-d3-hint" id="hm-d3-note">Tiles are drawn with <a href="https://d3js.org/" target="_blank" rel="noopener noreferrer">D3</a> loaded from jsDelivr when you open this page.</p>
+      <div id="hm-status" class="heatmap-status">Loading…</div>
+      <div id="hm-mount" class="heatmap-mount" aria-label="Customer treemap"></div>
+      <div id="hm-detail-panel" class="heatmap-detail-panel hidden" aria-live="polite"></div>
+    </div>
+  `;
+
+  const statusEl = document.getElementById("hm-status");
+  const filterEl = document.getElementById("hm-filter");
+
+  async function load() {
+    clearHeatmapDetailPanel();
+    statusEl.textContent = "Loading…";
+    statusEl.classList.remove("error-banner");
+    document.getElementById("hm-mount").innerHTML = "";
+    try {
+      const data = await apiWithTimeout("/api/heatmap", HEATMAP_FETCH_MS);
+      if (data.error) {
+        statusEl.textContent = String(data.error);
+        statusEl.classList.add("error-banner");
+        allCells = [];
+        return;
+      }
+      allCells = Array.isArray(data.customers) ? data.customers : [];
+      statusEl.textContent = `${allCells.length} customers from Prometheus`;
+      statusEl.classList.remove("error-banner");
+      paint();
+    } catch (e) {
+      allCells = [];
+      const msg = e && e.name === "AbortError" ? `Request timed out (${HEATMAP_FETCH_MS / 1000}s).` : String(e.message || e);
+      statusEl.textContent = msg;
+      statusEl.classList.add("error-banner");
+    }
+  }
+
+  function paint() {
+    clearHeatmapDetailPanel();
+    const q = (filterEl?.value || "").trim().toLowerCase();
+    const cells = !q ? allCells : allCells.filter((c) => String(c.customer || "").toLowerCase().includes(q));
+    void drawHeatmapTreemap(cells);
+  }
+
+  filterEl?.addEventListener("input", () => {
+    paint();
+  });
+  document.getElementById("hm-refresh")?.addEventListener("click", () => {
+    void load();
+  });
+
+  await load();
 }
 
 // ─────────────────────────────────────────────────────────────── Router ──────
@@ -2181,6 +2412,7 @@ function route() {
   else if (a === "versions") void renderGbVersions();
   else if (a === "gb-versions") void renderGbVersions();
   else if (a === "k8s-versions") void renderK8sVersions();
+  else if (a === "heatmap") void renderHeatmap();
   else if (a === "about") renderAbout();
   else if (a === "dive") renderServiceDive(rest[0] ? decodeURIComponent(rest.join("/")) : "");
   else if (a === "customer" && rest[0]) renderCustomer(decodeURIComponent(rest.join("/")));

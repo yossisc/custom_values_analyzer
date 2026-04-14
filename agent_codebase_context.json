@@ -1,0 +1,474 @@
+{
+  "document_type": "custom_values_analyzer.ai_agent_codebase_map",
+  "map_version": 1,
+  "generated_for_repo": "custom_values_analyzer",
+  "purpose": "Authoritative, technical orientation for coding agents (Cursor, Claude Code, etc.). Prefer reading named source files over trusting stale prose; use this file to route quickly to the right module, API, env var, or UI route.",
+  "maintenance": {
+    "when_to_update": [
+      "Bump `repo.app_version` when `server.py` VERSION changes; mirror `index.html` cache-bust `?v=` and footer label per About page note.",
+      "After adding/removing HTTP routes in `server.py`, sync `http_api.routes`.",
+      "After DB schema changes in `backend/db.py`, sync `persistence.sqlite`.",
+      "After scan/merge/service-key logic changes, sync `scanning`, `merge`, `service_model`.",
+      "After new hash routes or API consumers in `js/app.js`, sync `frontend`."
+    ],
+    "anchor_convention": "Paths are repo-relative. Python symbols use `module.qualname`. JSON keys in API bodies are literal strings."
+  },
+  "repo": {
+    "app_name": "Custom Values Analyzer",
+    "app_version": "2.0.8",
+    "one_liner": "Local-only web app: read-only scan of per-customer Helm custom_values YAML trees, deep-merged with a base chart values.yaml, persisted in SQLite, browsed via vanilla HTML/JS/CSS with optional Gemini NL filters and optional Prometheus-backed version matrices.",
+    "runtime": {
+      "language": "Python 3.10+",
+      "server_entrypoint": "server.py",
+      "server_class": "server.py.Handler",
+      "http_stack": "stdlib `http.server.ThreadingHTTPServer` + `SimpleHTTPRequestHandler` subclass; static files served from repo root (`ROOT`).",
+      "default_bind": "127.0.0.1:8765",
+      "launcher": "run.sh (creates .venv, pip install -r requirements.txt, exec python server.py)",
+      "pythonpath_note": "`server.py` inserts repo root into `sys.path` then imports `backend.*`."
+    },
+    "dependencies": {
+      "python_runtime_requirements_file": "requirements.txt",
+      "declared_python_packages": ["PyYAML>=6.0.1"],
+      "stdlib_heavy": ["sqlite3", "json", "urllib", "difflib", "http.server", "threading"],
+      "frontend_vendor": ["vendor/hljs/highlight.min.js", "vendor/hljs/yaml.min.js", "vendor/hljs/atom-one-dark.min.css"]
+    }
+  },
+  "repository_layout": {
+    "tree_roles": {
+      "server.py": "HTTP server, routing table for `/api/*`, imports payload builders from `backend.api_payloads`, orchestrates scan and Gemini/Prometheus helpers.",
+      "backend/__init__.py": "Package marker.",
+      "backend/config.py": "Paths, defaults, env resolution, Gemini key resolution, `DATA_DIR`, `DB_PATH`, `USER_CONFIG_FILE`, `CORE_SEGMENT_SERVICE_KEY` (default service key for Core segment).",
+      "backend/db.py": "SQLite schema, `connect` context manager, migrations (`_migrate`), CRUD for `customers` + `meta`.",
+      "backend/scan.py": "Filesystem walk, YAML load, `deep_merge` chain, `discover_service_keys`/`get_service_block`/`effective_enabled` for core flag, `run_scan_to_db`.",
+      "backend/merge.py": "`deep_merge(base, override)` recursive dict merge.",
+      "backend/services.py": "`discover_service_keys`, `get_service_block`, `effective_enabled`, `union_sorted`; `SKIP_ROOT` and nested `cronjobs.*` / `siteGeneric.*` naming.",
+      "backend/yamlfmt.py": "`dump_yaml` via PyYAML `yaml.dump`, truncation caps `TOOLTIP_YAML_MAX`, `MERGED_YAML_MAX`.",
+      "backend/api_payloads.py": "All structured JSON/HTML CSV payloads for UI: `meta_bundle`, `dashboard_matrix`, `service_dive`, diffs, anomaly, services list, CSV.",
+      "backend/gemini_nl.py": "`build_service_dive_nl_context`, `call_gemini_nl_filter`, `normalize_nl_filter`; Google Generative Language API `v1beta` `generateContent`.",
+      "backend/prometheus_versions.py": "`fetch_version_points`, `fetch_k8s_version_points`, `fetch_heatmap_cells`, `fetch_heatmap_bad_pod_rows`, `heatmap_bad_pod_detail_row`, `heatmap_status`, `_instant_query_vector`; PromQL includes heatmap aggregate + per-customer bad-pod detail query builder `_heatmap_bad_pods_detail_query`.",
+      "index.html": "Shell + nav links; cache-bust `css/app.css?v=` and `js/app.js?v=` must track `server.py` VERSION.",
+      "js/app.js": "Hash router, fetches `/api/*`, matrix/dive/anomaly/Prometheus UI, tooltip pin, Gemini UI wiring.",
+      "css/app.css": "Primary styling.",
+      "data/": "Writable runtime dir (gitignored patterns); holds `analyzer.db`, `user_config.json`, `server.pid`, optional `.gemini_api_key`."
+    }
+  },
+  "configuration": {
+    "path_resolution_priority": "For customers root and base values: environment variable overrides `data/user_config.json` overrides hardcoded defaults in `backend/config.py`.",
+    "environment_variables": [
+      {
+        "name": "CVA_CUSTOMERS_ROOT",
+        "used_in": "backend.config.customers_root",
+        "meaning": "Filesystem root containing customer trees (expected `AWS/` and `Azure/` subdirs, or single-cloud subdir, or flat legacy layout)."
+      },
+      {
+        "name": "CVA_BASE_VALUES",
+        "used_in": "backend.config.base_values_path",
+        "meaning": "Path to base Helm `values.yaml` merged under every customer overlay."
+      },
+      {
+        "name": "CVA_CORE_SERVICE",
+        "used_in": "backend.config.CORE_SEGMENT_SERVICE_KEY",
+        "default": "clingine",
+        "meaning": "Top-level service key whose `enabled: true` marks a customer as Core for segmentation (`core_segment` column, `customer_core` maps)."
+      },
+      {
+        "name": "GEMINI_API_KEY",
+        "used_in": "backend.config.resolve_gemini_api_key",
+        "meaning": "Primary API key for Gemini NL filter (Service Dive)."
+      },
+      {
+        "name": "GOOGLE_API_KEY",
+        "used_in": "backend.config.resolve_gemini_api_key",
+        "meaning": "Alternate env name for same key."
+      },
+      {
+        "name": "GEMINI_API_KEY_FILE",
+        "used_in": "backend.config.resolve_gemini_api_key",
+        "meaning": "Path to text file; first non-empty line is the key."
+      },
+      {
+        "name": "GOOGLE_API_KEY_FILE",
+        "used_in": "backend.config.resolve_gemini_api_key",
+        "meaning": "Alternate file-path env for key."
+      },
+      {
+        "name": "GEMINI_MODEL",
+        "used_in": "backend.gemini_nl._models_to_try",
+        "meaning": "If set, only this sanitized model id is used for NL filter."
+      },
+      {
+        "name": "GEMINI_MODEL_FALLBACKS",
+        "used_in": "backend.gemini_nl._models_to_try",
+        "meaning": "Comma-separated model ids tried in order when `GEMINI_MODEL` unset."
+      },
+      {
+        "name": "GEMINI_TIMEOUT_SEC",
+        "used_in": "backend.gemini_nl.call_gemini_nl_filter",
+        "default": "60",
+        "meaning": "HTTP timeout seconds per Gemini request."
+      },
+      {
+        "name": "GEMINI_NL_MAX_MATRIX_KEYS",
+        "used_in": "backend.gemini_nl._max_matrix_keys",
+        "meaning": "Cap rows from Service Dive matrix included in NL context (clamped 20..300)."
+      },
+      {
+        "name": "CVA_PROMETHEUS_URL",
+        "used_in": "backend.prometheus_versions.PROMETHEUS_INSTANT_QUERY_URL",
+        "default": "https://mon.mgmt.glassboxdigital.io/api/v1/query",
+        "meaning": "Prometheus instant query API base (GET with `query=`)."
+      }
+    ],
+    "persistent_files": [
+      {
+        "path": "data/user_config.json",
+        "written_by": "backend.config.save_user_config, set_user_gemini_key_file",
+        "keys": ["customers_root", "base_values", "gemini_key_file (optional; legacy openai_key_file removed on save)"]
+      },
+      {
+        "path": "data/analyzer.db",
+        "written_by": "backend.scan.persist_scan via backend.db.replace_customers",
+        "meaning": "SQLite DB of merged customer documents."
+      },
+      {
+        "path": "data/server.pid",
+        "written_by": "server.py.main",
+        "meaning": "Current server PID for operator UX."
+      },
+      {
+        "path": "data/.gemini_api_key",
+        "written_by": "backend.config.save_gemini_api_key_to_data_file",
+        "meaning": "Saved API key from UI (chmod 600 on POSIX); also scanned by resolve_gemini_api_key."
+      }
+    ],
+    "defaults_in_code": {
+      "customers_root_default": "Path.home()/work/st_customers",
+      "base_values_default": "Path.home()/work/helm/glassbox/values.yaml",
+      "cloud_subdirs_canonical": "('AWS', 'Azure') — see backend.config.CLOUD_SUBDIRS and scan._canonical_cloud_dirs case-insensitive matching."
+    }
+  },
+  "persistence": {
+    "sqlite": {
+      "path_constant": "backend.config.DB_PATH",
+      "connection": "backend.db.connect(db_path) -> sqlite3.Connection with row_factory Row; runs SCHEMA + _migrate on entry.",
+      "tables": {
+        "meta": {
+          "keys_used": [
+            "last_scan_iso",
+            "last_scan_epoch",
+            "customers_root",
+            "cloud_subdirs_scanned",
+            "customer_counts_by_cloud_json",
+            "base_values_path",
+            "service_key_count",
+            "scan_errors_json",
+            "core_segment_service_key"
+          ],
+          "read_aggregator": "backend.api_payloads.meta_bundle"
+        },
+        "customers": {
+          "columns": [
+            "id INTEGER PK",
+            "name TEXT UNIQUE — customer key e.g. AWS/foo or legacy flat name",
+            "source_files TEXT NOT NULL — JSON list of {name, path}",
+            "merged_json TEXT NOT NULL — full merged values dict as JSON",
+            "scan_epoch REAL NOT NULL",
+            "core_segment INTEGER NOT NULL DEFAULT 0 — 1 if CORE_SEGMENT_SERVICE_KEY enabled true at scan"
+          ],
+          "indexes": ["idx_customers_name on customers(name)"],
+          "writers": "backend.db.replace_customers (full replace each scan)",
+          "readers": "backend.db.list_customers, get_customer, iter_customers_merged, all_merged"
+        }
+      }
+    }
+  },
+  "scanning": {
+    "orchestrator": "backend.scan.run_scan_to_db -> scan_customers -> persist_scan",
+    "customer_discovery": {
+      "function": "backend.scan._customer_dirs_to_scan",
+      "layouts": [
+        "Parent with AWS/ and Azure/ subdirs → names `Cloud/CustomerDir`",
+        "Root named aws or azure (case-insensitive) → enumerate child dirs under that cloud",
+        "Else flat: each non-hidden child dir is a customer name without cloud prefix"
+      ]
+    },
+    "overlay_globs": "backend.scan.GLOB_PATTERNS = ('custom_values_*.yaml', 'custom_values_*.yml')",
+    "per_customer_merge_order": "Start dict copy of base (`_load_base`), then for each overlay file in sorted order apply `backend.merge.deep_merge`.",
+    "core_flag_at_scan": "backend.scan.scan_customers uses `get_service_block(merged, CORE_SEGMENT_SERVICE_KEY)` and `effective_enabled(blk) is True` → core_segment 1 else 0.",
+    "outputs": {
+      "in_memory_report_keys": ["ok", "errors", "customers_scanned", "service_keys", "base_values_path", "customers_root", "rows"],
+      "api_scan_response": "server.py POST /api/scan returns subset without `rows`"
+    }
+  },
+  "merge": {
+    "function": "backend.merge.deep_merge(base, override)",
+    "semantics": "If both sides are dicts, recursively merge keys; child dicts merge recursively; non-dict or new keys replace with deepcopy of override. If base is not a mapping, returns deepcopy(override)."
+  },
+  "service_model": {
+    "discover_service_keys": "backend.services.discover_service_keys(merged) -> sorted list of logical service ids.",
+    "rules": [
+      "Skip root keys in backend.services.SKIP_ROOT: global, glassbox, tags, dumpScript, dependencies, imageAdmissionPolicy, glassboxConfig.",
+      "If `cronjobs` is dict: include `cronjobs.<child>` when child dict has `enabled` key.",
+      "If `siteGeneric` is dict: include `siteGeneric.<child>` when child dict has `enabled` key.",
+      "Other top-level dict children with `enabled` key are services (component-style chart values)."
+    ],
+    "get_service_block": "backend.services.get_service_block(merged, service_key) resolves cronjobs.* and siteGeneric.* paths; else merged[service_key] if dict else {}.",
+    "effective_enabled": "backend.services.effective_enabled(block) reads block['enabled'] with truthy coercion for bool/int/str.",
+    "matrix_cell_semantics": "In `dashboard_matrix`, cell `enabled` is true iff `effective_enabled(block) is True`; red/green UI treats any non-true as red."
+  },
+  "yaml_serialization": {
+    "module": "backend.yamlfmt",
+    "dump_yaml": "PyYAML yaml.dump default_flow_style=False, sort_keys=False, width=100; optional max_len truncation with trailing comment line.",
+    "limits": {
+      "TOOLTIP_YAML_MAX": 12000,
+      "MERGED_YAML_MAX": 2000000
+    }
+  },
+  "http_api": {
+    "conventions": [
+      "JSON responses use Handler._json; static assets get Cache-Control no-cache headers in Handler.end_headers.",
+      "Many GET endpoints return empty structures if `DB_PATH` missing — UI treats as no data."
+    ],
+    "routes": [
+      {
+        "method": "GET",
+        "path": "/api/config",
+        "response": "{ customers_root, base_values } strings",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "POST",
+        "path": "/api/config",
+        "body": "{ customers_root, base_values } required both non-empty",
+        "effect": "backend.config.save_user_config",
+        "response": "{ ok: true, customers_root, base_values }"
+      },
+      {
+        "method": "GET",
+        "path": "/api/about",
+        "response": "version, name, description, features[], tech, source_paths — mirrors app marketing copy",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/meta",
+        "response": "{ has_data, pid, meta } where meta from backend.api_payloads.meta_bundle",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/customers",
+        "response": "Array of { name, file_count, files[], scan_epoch, core }",
+        "python": "server.py.Handler.do_GET; core from customers.core_segment"
+      },
+      {
+        "method": "GET",
+        "path": "/api/customer",
+        "query": "name=",
+        "response": "backend.api_payloads.customer_public_view — includes merged_yaml string",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/services",
+        "response": "backend.api_payloads.services_list_payload — { core_service_key, customer_core, services: [{ name, in_core, in_other, in_aws, in_azure }] }",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/service",
+        "query": "name=",
+        "response": "backend.api_payloads.service_public_view — { name, by_customer: { cust: { enabled, yaml } } }",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/dashboard",
+        "response": "backend.api_payloads.dashboard_matrix",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/anomaly",
+        "query": "entity=customers|services, threshold=int, color=green|red, segment=all|core|other",
+        "response": "backend.api_payloads.compute_anomaly — [{ name, count, total }]",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/service-dive",
+        "query": "service=",
+        "response": "backend.api_payloads.service_dive or 404",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/service-yaml-diff",
+        "query": "service, customer_a, customer_b, mode=diff|all",
+        "response": "backend.api_payloads.service_yaml_diff_payload — { service, left, right, mode, html } or { error }",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/customer-yaml-diff",
+        "query": "customer_a, customer_b, mode=diff|all",
+        "response": "backend.api_payloads.customer_yaml_diff_payload",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/export/matrix.csv",
+        "query": "segment=all|core|other",
+        "response": "text/csv from backend.api_payloads.matrix_csv",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "GET",
+        "path": "/api/gemini/status",
+        "response": "server.py._gemini_status_payload — configured, source, saved_key_file_exists, user_key_file_configured",
+        "python": "server.py.Handler.do_GET"
+      },
+      {
+        "method": "POST",
+        "path": "/api/gemini/settings",
+        "body": "{ api_key?, clear_saved_key?, gemini_key_file? | legacy openai_key_file? }",
+        "effect": "backend.config save/clear key file paths and optional disk key",
+        "python": "server.py.Handler.do_POST"
+      },
+      {
+        "method": "POST",
+        "path": "/api/service-dive/nl-filter",
+        "body": "{ service, query }",
+        "flow": "connect DB → service_dive → build_service_dive_nl_context → call_gemini_nl_filter → { ok, filter, model }",
+        "python": "server.py.Handler.do_POST"
+      },
+      {
+        "method": "GET",
+        "path": "/api/glassbox-versions",
+        "response": "{ points: [{ customer, version, count }] } or { error } with 502/504",
+        "python": "server.py.Handler.do_GET → backend.prometheus_versions.fetch_version_points"
+      },
+      {
+        "method": "GET",
+        "path": "/api/k8s-versions",
+        "response": "{ points: [{ customer, cluster, k8s_version, region, count }] }",
+        "python": "server.py.Handler.do_GET → backend.prometheus_versions.fetch_k8s_version_points"
+      },
+      {
+        "method": "GET",
+        "path": "/api/heatmap/bad-pods",
+        "query": "customer= (Prometheus Customer label; ASCII [A-Za-z0-9_.-]+ only)",
+        "response": "{ customer, pods: [{ customer, cluster, region, namespace, pod, container, status, reason }] } or { error }",
+        "python": "server.py.Handler.do_GET → backend.prometheus_versions.fetch_heatmap_bad_pod_rows (single instant query; lazy UI on tile click)"
+      },
+      {
+        "method": "GET",
+        "path": "/api/heatmap",
+        "response": "{ customers: [{ customer, node_count, error_pods, status: GREEN|ORANGE|RED }] } or { error }",
+        "python": "server.py.Handler.do_GET → backend.prometheus_versions.fetch_heatmap_cells (two PromQL queries in parallel)"
+      },
+      {
+        "method": "POST",
+        "path": "/api/scan",
+        "effect": "backend.scan.run_scan_to_db(DB_PATH)",
+        "response": "{ ok, customers_scanned, service_keys, errors, customers_root, base_values_path }",
+        "python": "server.py.Handler.do_POST"
+      },
+      {
+        "method": "POST",
+        "path": "/api/stop",
+        "effect": "Thread sleeps 0.4s, deletes PID file, ThreadingHTTPServer.shutdown",
+        "python": "server.py.Handler.do_POST"
+      }
+    ]
+  },
+  "service_dive_payload": {
+    "builder": "backend.api_payloads.service_dive",
+    "shape": {
+      "service": "string",
+      "customers": "string[] sorted casefold",
+      "row_keys": "string[] union of 2nd-level keys across per-customer service blocks",
+      "matrix": [
+        {
+          "key": "2nd-level yaml key under service block",
+          "modal_pct": "float percentage of customers sharing modal serialized value",
+          "by_customer": {
+            "<customer>": {
+              "display": "short label from backend.api_payloads._val_display",
+              "yaml": "hover text: dump_yaml for dict/list else scalar line",
+              "is_modal": "bool (legacy name; UI recomputes modal client-side in js renderDiveTable)",
+              "is_missing": "bool when key absent for customer"
+            }
+          }
+        }
+      ],
+      "customer_core": "Record<string,bool>",
+      "core_service_key": "string from meta or CORE_SEGMENT_SERVICE_KEY"
+    }
+  },
+  "gemini_nl_filter": {
+    "endpoint": "POST /api/service-dive/nl-filter",
+    "context_builder": "backend.gemini_nl.build_service_dive_nl_context",
+    "caller": "backend.gemini_nl.call_gemini_nl_filter",
+    "normalizer": "backend.gemini_nl.normalize_nl_filter",
+    "model_default_chain": ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3-flash-preview"],
+    "api_url_pattern": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=",
+    "output_filter_keys": ["keyQ", "custQ", "kvKey", "kvValue", "cloud", "segment", "explanation"],
+    "ui_application": "js/app.js Service Dive AI branch sets dive-fkey, dive-fcust, first kv row, cloud/core radios from filter; client still applies kv logic in filterCustomersByKVList."
+  },
+  "prometheus_integration": {
+    "module": "backend.prometheus_versions",
+    "timeout_seconds": 30,
+    "glassbox_promql": "backend.prometheus_versions.VERSION_BY_CUSTOMER_QUERY",
+    "k8s_promql": "backend.prometheus_versions.K8S_VERSION_QUERY",
+    "heatmap": "HEATMAP_NODES_BY_CUSTOMER_QUERY + HEATMAP_ERROR_PODS_QUERY; fetch_heatmap_cells merges by Customer; heatmap_status(0→GREEN, 1–2→ORANGE, 3+→RED); fetch_heatmap_bad_pod_rows + heatmap_bad_pod_detail_row for GET /api/heatmap/bad-pods (per-customer instant vector, same kube selectors as aggregate)",
+    "ui_fetch_abort_ms": 32000,
+    "ui_functions": ["js/app.js.renderPrometheusMatrixPage", "js/app.js.renderGbVersions", "js/app.js.renderK8sVersions", "js/app.js.renderHeatmap"]
+  },
+  "frontend": {
+    "shell": "index.html — #app main mount, #tooltip floating yaml, #nav routes, footer #footer-status",
+    "script": "js/app.js (hash router, no bundler)",
+    "css": "css/app.css",
+    "hash_routes": [
+      { "hash": "#/ or empty", "renderer": "renderHome" },
+      { "hash": "#/dashboard", "renderer": "renderDashboard", "api": ["GET /api/dashboard"] },
+      { "hash": "#/customers", "renderer": "renderCustomers", "api": ["GET /api/customers"] },
+      { "hash": "#/compare-customers?a=&b=", "renderer": "renderCompareCustomers", "api": ["GET /api/customer-yaml-diff"] },
+      { "hash": "#/services", "renderer": "renderServices", "api": ["GET /api/services"] },
+      { "hash": "#/service/<name>", "renderer": "renderService", "api": ["GET /api/service"] },
+      { "hash": "#/customer/<name>", "renderer": "renderCustomer", "api": ["GET /api/customer"] },
+      { "hash": "#/dive", "renderer": "renderServiceDive", "api": ["GET /api/services", "GET /api/service-dive", "POST /api/service-dive/nl-filter", "GET /api/service-yaml-diff", "GET /api/gemini/status", "POST /api/gemini/settings"] },
+      { "hash": "#/anomaly", "renderer": "renderAnomaly", "api": ["GET /api/anomaly"] },
+      { "hash": "#/gb-versions", "renderer": "renderGbVersions", "aliases": ["#/versions"], "api": ["GET /api/glassbox-versions", "GET /api/customers", "GET /api/dashboard"] },
+      { "hash": "#/k8s-versions", "renderer": "renderK8sVersions", "api": ["GET /api/k8s-versions", "GET /api/customers", "GET /api/dashboard"] },
+      { "hash": "#/heatmap", "renderer": "renderHeatmap", "api": ["GET /api/heatmap", "GET /api/heatmap/bad-pods"], "notes": "D3 treemap ESM from jsDelivr; bad-pod table only after tile click" },
+      { "hash": "#/about", "renderer": "renderAbout", "api": ["GET /api/about"] }
+    ],
+    "notable_client_logic": [
+      "highlightYamlCode — highlight.js optional soft-fail",
+      "Matrix CSV download: client-generated filtered matrix (matrix_filtered.csv), not only server /api/export/matrix.csv",
+      "Service Dive: filterCustomersByKV / filterCustomersByKVList AND semantics; renderDiveTable recomputes modal/outlier coloring per visible customer subset",
+      "Prometheus matrices: matchCustomerRowFromScan maps Prom Customer label to scanned customer rows for cloud/core filters"
+    ]
+  },
+  "diff_implementation": {
+    "library": "stdlib difflib.HtmlDiff",
+    "service_diff": "backend.api_payloads.service_yaml_diff_payload",
+    "full_customer_diff": "backend.api_payloads.customer_yaml_diff_payload",
+    "modes": {
+      "diff": "HtmlDiff.make_table context=True numlines=0 — changed lines only",
+      "all": "context=False numlines=5 — full YAML with diff highlights"
+    }
+  },
+  "testing": {
+    "runner_hint": "python -m unittest",
+    "files": ["tests/test_gemini_nl.py"],
+    "focus": "normalize_nl_filter, build_service_dive_nl_context, call_gemini_nl_filter with mocked urllib"
+  },
+  "security_and_ops_notes": [
+    "App designed for local use; binds loopback only in server.py.main.",
+    "Gemini keys resolved from env, files, or UI persistence under data/ — see backend.config.resolve_gemini_api_key order.",
+    "Scan is read-only on customer YAML; writes limited to data/ SQLite and config.",
+    "Prometheus default URL points at an org endpoint; override with CVA_PROMETHEUS_URL for other environments."
+  ]
+}

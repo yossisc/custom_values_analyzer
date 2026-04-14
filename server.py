@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-VERSION = "2.0.6"
+VERSION = "2.0.8"
 
 from backend.api_payloads import (  # noqa: E402
     compute_anomaly,
@@ -57,6 +57,8 @@ from backend.config import (  # noqa: E402
 from backend.db import connect, list_customers  # noqa: E402
 from backend.gemini_nl import build_service_dive_nl_context, call_gemini_nl_filter  # noqa: E402
 from backend.prometheus_versions import (  # noqa: E402
+    fetch_heatmap_bad_pod_rows,
+    fetch_heatmap_cells,
     fetch_k8s_version_points,
     fetch_version_points,
 )
@@ -142,6 +144,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "Compare 2 customers — full merged values.yaml diff (side-by-side)",
                     "Anomaly — find customers or services with unusually few enabled/disabled entries",
                     "GB_Versions — core customers only, glassboxVersion × Customer; K8S_Versions — cluster/k8s_version/region × Customer; row/column header click highlight; 30s query timeout",
+                    "Heatmap — treemap from Prometheus: tile size = node count per Customer; color = GREEN (good) / ORANGE (1–2) / RED (3+); click a non-green tile to load bad-pod rows (GET /api/heatmap/bad-pods); same CVA_PROMETHEUS_URL as version pages",
                     "Key+Value filter — find customers by specific config key values",
                     "Cloud filter — AWS / Azure / Both toggle on matrix views",
                     "Core / others — filter by segment service (default: clingine) enabled on the customer",
@@ -363,6 +366,40 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json({"error": err}, status)
                 return
             self._json({"points": points})
+            return
+
+        if path == "/api/heatmap/bad-pods":
+            qs = urllib.parse.parse_qs(parsed.query)
+            customer = (qs.get("customer") or [""])[0].strip()
+            if not customer:
+                self._json({"error": "missing customer"}, HTTPStatus.BAD_REQUEST)
+                return
+            rows, err = fetch_heatmap_bad_pod_rows(customer)
+            if err == "invalid customer name":
+                self._json({"error": err}, HTTPStatus.BAD_REQUEST)
+                return
+            if err:
+                status = (
+                    HTTPStatus.GATEWAY_TIMEOUT
+                    if "timed out" in err.lower()
+                    else HTTPStatus.BAD_GATEWAY
+                )
+                self._json({"error": err}, status)
+                return
+            self._json({"customer": customer, "pods": rows})
+            return
+
+        if path == "/api/heatmap":
+            customers, err = fetch_heatmap_cells()
+            if err:
+                status = (
+                    HTTPStatus.GATEWAY_TIMEOUT
+                    if "timed out" in err.lower()
+                    else HTTPStatus.BAD_GATEWAY
+                )
+                self._json({"error": err}, status)
+                return
+            self._json({"customers": customers})
             return
 
         return SimpleHTTPRequestHandler.do_GET(self)
